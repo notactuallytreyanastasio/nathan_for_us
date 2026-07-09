@@ -109,30 +109,33 @@ defmodule NathanForUsWeb.Telemetry do
   end
 
   def emit_cache_metrics do
-    try do
-      # Get cache statistics
+    # The caches start before Telemetry in the supervision tree, but they
+    # restart independently (one_for_one) — skip any that are mid-restart
+    # rather than crashing the poller against a dead process.
+    if Process.whereis(NathanForUs.GifCache) do
       gif_stats = NathanForUs.GifCache.stats()
-      frame_stats = NathanForUs.FrameCache.stats()
-      cache_manager_stats = NathanForUs.CacheManager.stats()
 
-      # Emit telemetry events
       :telemetry.execute([:nathan_for_us, :cache, :gif], %{
         memory_usage_mb: gif_stats.memory_usage_mb,
         cached_items: gif_stats.cached_gifs
       })
+    end
+
+    if Process.whereis(NathanForUs.FrameCache) do
+      frame_stats = NathanForUs.FrameCache.stats()
 
       :telemetry.execute([:nathan_for_us, :cache, :frame], %{
         memory_usage_mb: frame_stats.memory_usage_mb,
         cached_items: frame_stats.cached_frames
       })
+    end
+
+    if Process.whereis(NathanForUs.CacheManager) do
+      cache_manager_stats = NathanForUs.CacheManager.stats()
 
       :telemetry.execute([:nathan_for_us, :cache, :total], %{
         memory_usage_percent: cache_manager_stats.memory_usage_percent
       })
-    rescue
-      _error ->
-        # Cache modules might not be started yet, ignore errors during startup
-        :ok
     end
   end
 end

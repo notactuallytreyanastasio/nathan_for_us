@@ -8,7 +8,6 @@ defmodule NathanForUs.Application do
   @impl true
   def start(_type, _args) do
     base_children = [
-      NathanForUsWeb.Telemetry,
       NathanForUs.Repo,
       {DNSCluster, query: Application.get_env(:nathan_for_us, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: NathanForUs.PubSub},
@@ -17,7 +16,9 @@ defmodule NathanForUs.Application do
       # Start cache processes for memory-efficient GIF and frame storage
       NathanForUs.GifCache,
       NathanForUs.FrameCache,
-      NathanForUs.CacheManager
+      NathanForUs.CacheManager,
+      # Telemetry's poller measures the caches, so it starts after them
+      NathanForUsWeb.Telemetry
     ]
 
     # Conditionally add services based on environment
