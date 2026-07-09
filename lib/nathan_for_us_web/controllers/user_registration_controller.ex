@@ -26,11 +26,14 @@ defmodule NathanForUsWeb.UserRegistrationController do
             &url(~p"/users/confirm/#{&1}")
           )
 
+        # log_in_user sends its own redirect, honoring :user_return_to. A
+        # redirect/2 after it raises AlreadySentError (which is also why the
+        # previous explicit redirect here never took effect).
         conn
         |> put_flash(:info, "Welcome! Grab the desktop tool and rip your first video.")
         |> put_session(:show_welcome_modal, true)
+        |> put_session(:user_return_to, ~p"/setup")
         |> UserAuth.log_in_user(user)
-        |> redirect(to: ~p"/setup")
 
       {:error, %Ecto.Changeset{} = changeset} ->
         conn
