@@ -17,20 +17,11 @@ defmodule NathanForUs.Application do
       # Start cache processes for memory-efficient GIF and frame storage
       NathanForUs.GifCache,
       NathanForUs.FrameCache,
-      NathanForUs.CacheManager,
-      # Start public timeline cache for fast page loads
-      NathanForUs.PublicTimelineCache
+      NathanForUs.CacheManager
     ]
 
     # Conditionally add services based on environment
     optional_children = []
-
-    optional_children =
-      if Application.get_env(:nathan_for_us, :start_bluesky_hose, true) do
-        [NathanForUs.BlueskyHose | optional_children]
-      else
-        optional_children
-      end
 
     optional_children =
       if Application.get_env(:nathan_for_us, :start_video_processing, true) do

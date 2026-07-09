@@ -41,4 +41,3 @@ config :phoenix_live_view,
 
 # Disable video processing and external services during tests
 config :nathan_for_us, :start_video_processing, false
-config :nathan_for_us, :start_bluesky_hose, false

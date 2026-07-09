@@ -28,21 +28,6 @@ config :nathan_for_us, :search,
   enable_full_text_search: true,
   search_timeout_ms: 30_000
 
-# Admin configuration
-config :nathan_for_us, :admin,
-  max_backfill_limit: 1000,
-  default_backfill_limit: 50,
-  backfill_timeout_ms: 300_000,
-  stats_cache_ttl_ms: 60_000
-
-# Bluesky API configuration
-config :nathan_for_us, :bluesky_api,
-  base_url: "https://public.api.bsky.app",
-  timeout_ms: 10_000,
-  retry_attempts: 3,
-  retry_delay_ms: 1_000,
-  rate_limit_per_hour: 3000
-
 # Logging configuration
 config :nathan_for_us, :logging,
   enable_error_tracking: true,
@@ -52,7 +37,6 @@ config :nathan_for_us, :logging,
 # Feature flags
 config :nathan_for_us, :feature_flags,
   video_processing_enabled: true,
-  bluesky_integration_enabled: true,
   admin_dashboard_enabled: true,
   frame_animation_enabled: true,
   search_suggestions_enabled: true
