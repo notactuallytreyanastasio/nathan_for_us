@@ -52,6 +52,16 @@ defmodule NathanForUsWeb.AddVideoLiveTest do
     refute html =~ "chmod"
   end
 
+  test "?tab=cli deep link opens the desktop-app tab", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/add?tab=cli")
+
+    # Both panels stay in the DOM; the active one must NOT carry the hidden
+    # class (asserting on text alone would match hidden content).
+    refute has_element?(view, "div.hidden [href='/downloads/Framecut-Grabber-macos.zip']")
+    assert has_element?(view, "[href='/downloads/Framecut-Grabber-macos.zip']")
+    assert :sys.get_state(view.pid).socket.assigns.tab == "cli"
+  end
+
   test "full client ingest protocol creates video, frames, captions and links", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/add")
 

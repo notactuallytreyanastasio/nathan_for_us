@@ -60,7 +60,15 @@ defmodule NathanForUsWeb.AddVideoLive do
     {:ok, socket}
   end
 
-  def handle_params(_params, uri, socket) do
+  def handle_params(params, uri, socket) do
+    # Honor ?tab= deep links (home hero and /setup link straight to the
+    # desktop-app tab as /add?tab=cli).
+    socket =
+      case params["tab"] do
+        tab when tab in ["upload", "cli"] -> assign(socket, :tab, tab)
+        _ -> socket
+      end
+
     case base_url_from_uri(uri) do
       nil ->
         {:noreply, socket}
