@@ -43,90 +43,79 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
 
   describe "mount and basic functionality" do
     test "mounts successfully with default hot sort", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/gifs")
+      {:ok, view, html} = live(conn, "/gifs")
 
-      assert html =~ "GIF FEED"
-      # Default sort
+      assert html =~ "Explore"
       assert html =~ "Hot"
       assert html =~ "Top"
       assert html =~ "New"
-    end
-
-    test "displays navigation links", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      assert html =~ "Random GIF"
-      assert html =~ "MAKE A GIF"
-      assert html =~ "ADD VIDEO"
-    end
-
-    test "shows browseable GIFs", %{conn: conn, browseable_gif1: gif1, browseable_gif2: gif2} do
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      # Should show GIF titles or fallback
-      assert html =~ gif1.title or html =~ "Untitled GIF"
-      assert html =~ gif2.title or html =~ "Untitled GIF"
-    end
-
-    test "shows GIF metadata", %{conn: conn, browseable_gif1: gif1} do
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      # Should show upvote count and other metadata
-      assert html =~ "#{gif1.upvotes_count}" or html =~ "upvotes"
-    end
-
-    test "handles empty GIF list gracefully", %{conn: conn} do
-      # Delete all browseable GIFs
-      Repo.delete_all(BrowseableGif)
-
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      assert html =~ "No GIFs created yet" or html =~ "GIF FEED"
-    end
-  end
-
-  describe "sorting functionality" do
-    test "can sort by hot (default)", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/gifs")
 
       state = :sys.get_state(view.pid).socket.assigns
       assert state.sort == "hot"
     end
 
+    test "displays page actions", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/gifs")
+
+      assert html =~ "Random GIF"
+      assert html =~ "Make a GIF"
+    end
+
+    test "shows browseable GIFs", %{conn: conn, browseable_gif1: gif1, browseable_gif2: gif2} do
+      {:ok, _view, html} = live(conn, "/gifs")
+
+      assert html =~ gif1.title
+      assert html =~ gif2.title
+    end
+
+    test "cards link posters and permalinks", %{conn: conn, browseable_gif1: gif1} do
+      {:ok, _view, html} = live(conn, "/gifs")
+
+      # Static poster in the media well, permalink on the share button
+      assert html =~ "/gif/#{gif1.gif_id}/poster"
+      assert html =~ "/g/#{gif1.id}"
+    end
+
+    test "handles empty GIF list gracefully", %{conn: conn} do
+      Repo.delete_all(BrowseableGif)
+
+      {:ok, _view, html} = live(conn, "/gifs")
+
+      assert html =~ "Nothing hot yet"
+      assert html =~ "Make a GIF"
+    end
+  end
+
+  describe "sorting functionality" do
     test "can sort by top", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/gifs")
+      {:ok, view, _html} = live(conn, "/gifs?sort=top")
 
-      # Navigate to top sort
-      {:ok, _view, html} = live(conn, "/gifs?sort=top")
-
-      assert html =~ "GIF Feed"
-      # Should show same GIFs but potentially different order
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.sort == "top"
     end
 
     test "can sort by new", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/gifs")
+      {:ok, view, _html} = live(conn, "/gifs?sort=new")
 
-      # Navigate to new sort
-      {:ok, _view, html} = live(conn, "/gifs?sort=new")
-
-      assert html =~ "GIF Feed"
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.sort == "new"
     end
 
     test "invalid sort defaults to hot", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/gifs?sort=invalid")
+      {:ok, view, _html} = live(conn, "/gifs?sort=invalid")
 
-      assert html =~ "GIF Feed"
-      # Should handle gracefully
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.sort == "hot"
     end
 
-    test "sort parameter updates via handle_params", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/gifs")
+    test "empty sorts get sort-specific empty states", %{conn: conn} do
+      Repo.delete_all(BrowseableGif)
 
-      # Change sort via URL
-      send(view.pid, {:live_patch, "/gifs?sort=top"})
+      {:ok, _view, html} = live(conn, "/gifs?sort=top")
+      assert html =~ "No top GIFs yet"
 
-      :sys.get_state(view.pid)
-      # Should update sort
+      {:ok, _view, html} = live(conn, "/gifs?sort=new")
+      assert html =~ "Nothing new"
     end
   end
 
@@ -139,43 +128,28 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       conn = log_in_user(conn, user)
       {:ok, view, _html} = live(conn, "/gifs")
 
-      # Upvote a GIF (not created by this user)
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
 
-      # Should update upvote count
+      assert Viral.get_user_votes([gif.id], user_id: user.id) == %{gif.id => "up"}
+
+      # The active vote state is the feedback — no flash
       html = render(view)
-      assert html =~ "#{gif.upvotes_count + 1}" or html =~ "upvoted"
+      refute html =~ "GIF upvoted!"
     end
 
-    test "user cannot upvote their own GIF", %{
+    test "upvoting again removes the vote (toggle off)", %{
       conn: conn,
       regular_user1: user,
-      browseable_gif1: gif
+      browseable_gif2: gif
     } do
       conn = log_in_user(conn, user)
       {:ok, view, _html} = live(conn, "/gifs")
 
-      # Try to upvote own GIF
+      render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
 
-      html = render(view)
-      # Should show error or just work normally (different systems handle this differently)
-      assert html =~ "Failed to vote" or html =~ "GIF upvoted!" or html =~ gif.title
-    end
-
-    test "user can remove their upvote", %{conn: conn, regular_user1: user, browseable_gif2: gif} do
-      conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/gifs")
-
-      # Upvote first
-      render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
-
-      # Then remove upvote
-      render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
-
-      # Should return to original count
-      html = render(view)
-      assert html =~ "#{gif.upvotes_count}" or html =~ "upvote"
+      assert Viral.get_user_votes([gif.id], user_id: user.id) == %{}
+      assert Repo.get(BrowseableGif, gif.id).upvotes_count == 0
     end
 
     test "unauthenticated user sees register prompt when upvoting", %{
@@ -186,140 +160,114 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
 
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
 
-      # Should show register flash/prompt
       html = render(view)
-      assert html =~ "Account Required" or html =~ "log in" or html =~ "register"
+      assert html =~ "Account required"
+      assert html =~ "/users/register"
     end
 
-    test "register flash can be closed", %{conn: conn, browseable_gif1: gif} do
+    test "register prompt can be dismissed", %{conn: conn, browseable_gif1: gif} do
       {:ok, view, _html} = live(conn, "/gifs")
 
-      # Trigger register flash
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
-
-      # Close the flash
-      render_click(view, "close_register_flash")
+      render_click(view, "dismiss_register_prompt")
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.show_register_flash == false
-    end
-
-    test "anonymous voting uses session ID", %{conn: conn, browseable_gif1: gif} do
-      {:ok, view, _html} = live(conn, "/gifs")
-
-      # Anonymous upvote should use session ID
-      render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
-
-      # Should still work but show register prompt
-      html = render(view)
-      assert html =~ "Account Required" or html =~ "upvote"
+      assert state.show_register_prompt == false
+      refute render(view) =~ "Account required"
     end
   end
 
-  describe "GIF interaction" do
-    test "GIF displays correctly", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/gifs")
+  describe "GIF modal deep links" do
+    test "?gif_id opens the modal even for GIFs outside the loaded page", %{
+      conn: conn,
+      browseable_gif1: gif
+    } do
+      {:ok, _view, html} = live(conn, "/gifs?gif_id=#{gif.id}")
 
-      # Should show the GIF title, fallback, or general GIF content
-      assert html =~ gif.title or html =~ "Untitled GIF" or html =~ "GIF FEED"
+      assert html =~ ~s(role="dialog")
+      assert html =~ "Download"
+      assert html =~ "Copy GIF link"
     end
 
-    test "GIF shows caption preview", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/gifs")
+    test "missing/private gif_id patches away with an error flash", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/gifs")
 
-      # Should show caption or video title or fallback text
-      assert html =~ "From:" or html =~ "Test Video"
+      render_patch(view, "/gifs?gif_id=999999")
+
+      assert render(view) =~ "That GIF is gone or private"
+
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.show_gif_modal == false
     end
 
-    test "GIF shows vote count", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/gifs")
+    test "close_gif_modal patches the gif_id away", %{conn: conn, browseable_gif1: gif} do
+      {:ok, view, _html} = live(conn, "/gifs?gif_id=#{gif.id}")
 
-      assert html =~ "#{gif.upvotes_count}"
-    end
+      render_click(view, "close_gif_modal")
 
-    test "GIF shows creation time", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      # Should show relative time
-      assert html =~ "ago" or html =~ "minutes" or html =~ "hours"
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.show_gif_modal == false
+      refute render(view) =~ ~s(role="dialog")
     end
   end
 
   describe "random GIF functionality" do
-    test "random GIF button redirects to timeline", %{conn: conn} do
+    test "random GIF button redirects to a video editor", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/gifs")
 
-      render_click(view, "random_gif")
-
-      # Should redirect to random GIF URL
-      # (Hard to test exact redirect)
+      assert {:error, {:redirect, %{to: to}}} = render_click(view, "random_gif")
+      assert to =~ "/video/"
     end
 
     test "random GIF handles no videos gracefully", %{conn: conn} do
-      # Delete all videos
-      Repo.delete_all(VideoSchema)
-
       {:ok, view, _html} = live(conn, "/gifs")
+
+      Repo.delete_all(NathanForUs.Viral.GifVote)
+      Repo.delete_all(BrowseableGif)
+      Repo.delete_all(Gif)
+      Repo.delete_all(VideoFrame)
+      Repo.delete_all(VideoSchema)
 
       render_click(view, "random_gif")
 
-      html = render(view)
-      # Should show error message
-      assert html =~ "No suitable videos" or html =~ "GIF Feed"
+      assert render(view) =~ "No suitable videos"
     end
   end
 
-  describe "navigation and routing" do
-    test "header navigation links work", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/gifs")
+  describe "loading and pagination" do
+    test "feed is loaded after connected mount", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/gifs")
 
-      assert html =~ "MAKE A GIF"
-      assert html =~ "/add"
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.feed_loaded? == true
+      assert state.feed_empty? == false
+      assert state.page == 1
     end
 
-    test "sort URLs work correctly", %{conn: conn} do
-      # Test all sort options
-      for sort <- ["hot", "top", "new"] do
-        {:ok, _view, html} = live(conn, "/gifs?sort=#{sort}")
-        assert html =~ "GIF Feed"
-      end
-    end
-  end
+    test "a short first page marks the end of the feed", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/gifs")
 
-  describe "loading and performance" do
-    test "handles large number of GIFs", %{
-      conn: conn,
+      state = :sys.get_state(view.pid).socket.assigns
+      # Only 2 GIFs exist (< page size), so the feed is complete
+      assert state.end_of_feed? == true
+      assert html =~ "seen it all"
+    end
+
+    test "feed queries paginate", %{
       video: video,
       regular_user1: user,
       cached_gif: gif
     } do
-      # Create many browseable GIFs
-      for i <- 1..20 do
-        create_browseable_gif(video, user, gif, "Test GIF #{i}", i)
+      for i <- 1..30 do
+        {:ok, _} = create_browseable_gif(video, user, gif, "Test GIF #{i}", i)
       end
 
-      {:ok, _view, html} = live(conn, "/gifs")
+      page1 = Viral.get_new_browseable_gifs(24, 0)
+      page2 = Viral.get_new_browseable_gifs(24, 24)
 
-      assert html =~ "GIF Feed"
-      # Should handle the load without issues
-    end
-
-    test "loading state works", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/gifs")
-
-      state = :sys.get_state(view.pid).socket.assigns
-      # Should not be loading after mount
-      assert state.loading == false
-    end
-
-    test "handles sort change loading", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/gifs")
-
-      # Trigger sort change
-      send(view.pid, {:live_patch, "/gifs?sort=top"})
-
-      :sys.get_state(view.pid)
-      # Should handle sort change gracefully
+      assert length(page1) == 24
+      assert length(page2) == 32 - 24
+      assert MapSet.disjoint?(MapSet.new(page1, & &1.id), MapSet.new(page2, & &1.id))
     end
   end
 
@@ -328,74 +276,71 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       conn = log_in_user(conn, user)
       {:ok, view, _html} = live(conn, "/gifs")
 
-      render_click(view, "upvote_gif", %{"gif_id" => "99999"})
+      render_click(view, "upvote_gif", %{"gif_id" => "999999"})
 
-      # Should handle gracefully
-      html = render(view)
       # Page should still work
-      assert html =~ "GIF FEED"
+      assert render(view) =~ "Explore"
     end
 
-    test "malformed gif_id for upvote", %{conn: conn} do
+    test "anonymous upvote with any gif_id shows the register prompt", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/gifs")
 
-      render_click(view, "upvote_gif", %{"gif_id" => "invalid"})
+      render_click(view, "upvote_gif", %{"gif_id" => "999999"})
 
-      # Should handle gracefully
-      html = render(view)
-      assert html =~ "GIF FEED"
-    end
-
-    test "handles database errors gracefully", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      # Should load successfully even if there are issues
-      assert html =~ "GIF FEED"
+      assert render(view) =~ "Account required"
     end
   end
 
-  describe "caption functionality" do
-    test "GIFs show caption previews when available", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      # Should show either captions or video title
-      # Either caption or fallback
-      assert html =~ "From:" or html =~ "\""
-    end
-
-    test "GIFs handle missing captions gracefully", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      # Should show video title as fallback
-      assert html =~ "Test Video" or html =~ "From:"
-    end
-  end
-
-  describe "user voting state" do
-    test "shows user's voting state correctly", %{conn: conn, regular_user1: user} do
-      conn = log_in_user(conn, user)
-      {:ok, _view, html} = live(conn, "/gifs")
-
-      # Should show upvote buttons appropriately
-      assert html =~ "upvote" or html =~ "👍"
-    end
-
-    test "voting state persists across page loads", %{
-      conn: conn,
+  describe "posting semantics (Viral context)" do
+    test "posting flips is_public and stamps posted_at with a title", %{
+      video: video,
       regular_user1: user,
-      browseable_gif2: gif
+      cached_gif: cached_gif
     } do
-      conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/gifs")
+      {:ok, draft} =
+        Viral.create_browseable_gif(%{
+          video_id: video.id,
+          gif_id: cached_gif.id,
+          start_frame_index: 1,
+          end_frame_index: 5,
+          is_public: false
+        })
 
-      # Upvote a GIF
-      render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
+      assert {:ok, posted} =
+               Viral.post_browseable_gif_to_timeline(draft.id, user.id, "My cut")
 
-      # Reload page
-      {:ok, _view, html} = live(conn, "/gifs")
+      assert posted.is_public == true
+      assert posted.posted_at != nil
+      assert posted.title == "My cut"
+      assert posted.created_by_user_id == user.id
+    end
 
-      # Should remember the vote state
-      assert html =~ "upvoted" or html =~ "#{gif.upvotes_count + 1}"
+    test "posting never reassigns an existing creator", %{
+      browseable_gif1: gif,
+      regular_user2: other_user
+    } do
+      original_creator_id = gif.created_by_user_id
+
+      assert {:ok, posted} =
+               Viral.post_browseable_gif_to_timeline(gif.id, other_user.id, nil)
+
+      assert posted.created_by_user_id == original_creator_id
+    end
+
+    test "posting an unknown id returns an error" do
+      assert {:error, :not_found} = Viral.post_browseable_gif_to_timeline(999_999, nil, nil)
+    end
+
+    test "posted GIFs appear on the timeline query", %{
+      browseable_gif1: gif,
+      regular_user1: user
+    } do
+      assert Viral.get_timeline_gif(gif.id) == nil
+
+      {:ok, _posted} = Viral.post_browseable_gif_to_timeline(gif.id, user.id, nil)
+
+      assert %BrowseableGif{} = Viral.get_timeline_gif(gif.id)
+      assert Enum.any?(Viral.get_timeline_gifs(24, 0), &(&1.id == gif.id))
     end
   end
 

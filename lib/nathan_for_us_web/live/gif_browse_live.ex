@@ -1,596 +1,418 @@
 defmodule NathanForUsWeb.GifBrowseLive do
   @moduledoc """
-  Enhanced browse page for ALL generated GIFs with voting and filtering.
+  Browse page for public GIFs with voting and sorting (hot / top / new).
 
-  Users can browse GIFs others have made, upvote them, and filter by:
-  - Hot (Reddit-style algorithm)
-  - Top (most upvoted all time)
-  - New (most recent)
+  The feed is an infinite-scroll stream paginated 24 at a time; `?gif_id=`
+  deep links resolve straight from the database so shared links work even
+  when the GIF isn't in the loaded page.
   """
 
   use NathanForUsWeb, :live_view
 
-  alias NathanForUs.Viral
+  alias NathanForUs.{Video, Viral}
+  alias NathanForUsWeb.Components.GifModal
+
+  import NathanForUsWeb.Components.GifModal,
+    only: [vote_button_class: 1, poster_name: 1, format_duration: 1, format_time_ago: 1]
 
   on_mount {NathanForUsWeb.UserAuth, :mount_current_user}
 
-  def mount(params, session, socket) do
-    sort = Map.get(params, "sort", "hot")
-    gifs = load_gifs_by_sort(sort)
+  @page_size 24
+  @sorts ~w(hot top new)
 
-    # Get session ID for anonymous voting
-    session_id = Map.get(session, "live_socket_id")
-
-    # Add caption data to GIFs
-    gifs_with_captions = add_caption_data_to_gifs(gifs)
-
-    # Check if we should open a GIF modal based on query params
-    {show_gif_modal, modal_gif, modal_captions} = 
-      case Map.get(params, "gif_id") do
-        nil -> 
-          {false, nil, []}
-        gif_id_str ->
-          case Integer.parse(gif_id_str) do
-            {gif_id_int, ""} ->
-              case Enum.find(gifs_with_captions, fn gif -> gif.id == gif_id_int end) do
-                nil -> 
-                  {false, nil, []}
-                found_gif ->
-                  if found_gif.gif && found_gif.gif.frame_ids do
-                    captions = NathanForUs.Video.get_gif_captions(found_gif.gif.frame_ids)
-                    {true, found_gif, captions}
-                  else
-                    {false, nil, []}
-                  end
-              end
-            _ ->
-              {false, nil, []}
-          end
-      end
-
+  def mount(_params, session, socket) do
     socket =
       socket
-      |> assign(:page_title, "GIF Feed")
-      |> assign(:gifs, gifs_with_captions)
-      |> assign(:loading, false)
-      |> assign(:sort, sort)
-      |> assign(:session_id, session_id)
-      |> assign(:show_register_flash, false)
-      |> assign(:show_gif_modal, show_gif_modal)
-      |> assign(:modal_gif, modal_gif)
-      |> assign(:modal_captions, modal_captions)
-      |> load_user_votes()
+      |> assign(:page_title, "GIF feed")
+      |> assign(:session_id, Map.get(session, "live_socket_id"))
+      |> assign(:sort, nil)
+      |> assign(:page, 1)
+      |> assign(:feed_loaded?, false)
+      |> assign(:feed_empty?, true)
+      |> assign(:end_of_feed?, false)
+      |> assign(:show_register_prompt, false)
+      |> assign(:show_gif_modal, false)
+      |> assign(:modal_gif, nil)
+      |> assign(:modal_captions, [])
+      |> stream(:gifs, [])
 
     {:ok, socket}
   end
 
   def handle_params(params, _url, socket) do
-    sort = Map.get(params, "sort", "hot")
-    
-    # Handle GIF modal parameter
-    {show_gif_modal, modal_gif, modal_captions} = 
-      case Map.get(params, "gif_id") do
-        nil -> 
-          {false, nil, []}
-        gif_id_str ->
-          case Integer.parse(gif_id_str) do
-            {gif_id_int, ""} ->
-              current_gifs = if sort != socket.assigns.sort do
-                load_gifs_by_sort(sort) |> add_caption_data_to_gifs()
-              else
-                socket.assigns.gifs
-              end
-              
-              case Enum.find(current_gifs, fn gif -> gif.id == gif_id_int end) do
-                nil -> 
-                  {false, nil, []}
-                found_gif ->
-                  if found_gif.gif && found_gif.gif.frame_ids do
-                    captions = NathanForUs.Video.get_gif_captions(found_gif.gif.frame_ids)
-                    {true, found_gif, captions}
-                  else
-                    {false, nil, []}
-                  end
-              end
-            _ ->
-              {false, nil, []}
-          end
+    sort = normalize_sort(Map.get(params, "sort"))
+
+    socket =
+      if connected?(socket) and sort != socket.assigns.sort do
+        load_feed(socket, sort)
+      else
+        assign(socket, :sort, sort)
       end
 
-    if sort != socket.assigns.sort do
-      gifs = load_gifs_by_sort(sort)
-      gifs_with_captions = add_caption_data_to_gifs(gifs)
-
-      socket =
-        socket
-        |> assign(:sort, sort)
-        |> assign(:loading, true)
-        |> assign(:show_gif_modal, show_gif_modal)
-        |> assign(:modal_gif, modal_gif)
-        |> assign(:modal_captions, modal_captions)
-        |> assign(:gifs, gifs_with_captions)
-        |> assign(:loading, false)
-        |> load_user_votes()
-
-      {:noreply, socket}
-    else
-      socket =
-        socket
-        |> assign(:show_gif_modal, show_gif_modal)
-        |> assign(:modal_gif, modal_gif)
-        |> assign(:modal_captions, modal_captions)
-      
-      {:noreply, socket}
-    end
+    resolve_modal(socket, params)
   end
 
   def handle_event("upvote_gif", %{"gif_id" => gif_id}, socket) do
-    if socket.assigns.current_user do
+    if user = socket.assigns.current_user do
       gif_id = String.to_integer(gif_id)
-      user_id = socket.assigns.current_user.id
+      Viral.toggle_upvote(gif_id, user_id: user.id)
 
-      case Viral.vote_on_gif(gif_id, "up", user_id: user_id) do
-        {:ok, _vote} ->
-          socket =
-            socket
-            |> put_flash(:info, "GIF upvoted!")
-            |> refresh_gif_votes(gif_id)
-            |> load_user_votes()
-
-          {:noreply, socket}
-
-        {:error, _changeset} ->
-          socket = put_flash(socket, :error, "Failed to vote on GIF")
-          {:noreply, socket}
-      end
+      {:noreply, refresh_gif(socket, gif_id)}
     else
-      socket = assign(socket, :show_register_flash, true)
-      {:noreply, socket}
+      {:noreply, assign(socket, :show_register_prompt, true)}
     end
+  end
+
+  def handle_event("dismiss_register_prompt", _params, socket) do
+    {:noreply, assign(socket, :show_register_prompt, false)}
   end
 
   def handle_event("random_gif", _params, socket) do
-    case NathanForUs.Video.get_random_video_sequence(15) do
+    case Video.get_random_video_sequence(15) do
       {:ok, video_id, start_frame} ->
-        # Generate a range of 15 frame indices starting from the random frame
-        frame_indices = Enum.to_list(0..14)
-        indices_param = Enum.join(frame_indices, ",")
+        indices_param = Enum.join(0..14, ",")
 
-        # Navigate to the video timeline with pre-selected frames
         path =
           ~p"/video/#{video_id}?random=true&start_frame=#{start_frame}&selected_indices=#{indices_param}"
 
-        socket = redirect(socket, to: path)
-        {:noreply, socket}
+        {:noreply, redirect(socket, to: path)}
 
       {:error, _reason} ->
-        socket = put_flash(socket, :error, "No suitable videos found for random GIF generation")
-        {:noreply, socket}
+        {:noreply, put_flash(socket, :error, "No suitable videos found for a random GIF")}
     end
-  end
-
-  def handle_event("close_register_flash", _params, socket) do
-    socket = assign(socket, :show_register_flash, false)
-    {:noreply, socket}
   end
 
   def handle_event("view_gif", %{"gif_id" => gif_id}, socket) do
-    # Find the GIF data
-    gif_id_int = String.to_integer(gif_id)
-    modal_gif = Enum.find(socket.assigns.gifs, fn gif -> gif.id == gif_id_int end)
-
-    if modal_gif && modal_gif.gif && modal_gif.gif.frame_ids do
-      # Get captions for this GIF
-      captions = NathanForUs.Video.get_gif_captions(modal_gif.gif.frame_ids)
-      
-      # Construct URL with both sort and gif_id params
-      url_params = if socket.assigns.sort != "hot" do
-        "/gifs?sort=#{socket.assigns.sort}&gif_id=#{gif_id}"
-      else
-        "/gifs?gif_id=#{gif_id}"
-      end
-      
-      socket = 
-        socket
-        |> assign(:show_gif_modal, true)
-        |> assign(:modal_gif, modal_gif)
-        |> assign(:modal_captions, captions)
-        |> push_patch(to: url_params)
-      
-      {:noreply, socket}
-    else
-      # GIF not found or missing data
-      {:noreply, socket}
-    end
+    {:noreply, push_patch(socket, to: feed_path(socket.assigns.sort, gif_id))}
   end
 
   def handle_event("close_gif_modal", _params, socket) do
-    # Construct URL to preserve sort parameter but remove gif_id
-    url_path = if socket.assigns.sort != "hot" do
-      "/gifs?sort=#{socket.assigns.sort}"
-    else
-      "/gifs"
-    end
-    
-    socket = 
-      socket
-      |> assign(:show_gif_modal, false)
-      |> assign(:modal_gif, nil)
-      |> assign(:modal_captions, [])
-      |> push_patch(to: url_path)
-    
-    {:noreply, socket}
+    {:noreply, push_patch(socket, to: feed_path(socket.assigns.sort))}
   end
 
-  def handle_event("share_gif", %{"gif_id" => gif_id}, socket) do
-    # Deep-link to this GIF in the feed; the client copies it to the clipboard.
-    url = url(socket, ~p"/gifs?gif_id=#{gif_id}")
+  def handle_event("load_more", _params, socket) do
+    %{sort: sort, page: page} = socket.assigns
+    gifs = fetch_page(sort, page + 1) |> decorate(socket)
 
     socket =
       socket
-      |> push_event("copy_to_clipboard", %{text: url})
-      |> put_flash(:info, "Link copied — share away!")
+      |> assign(:page, page + 1)
+      |> assign(:end_of_feed?, length(gifs) < @page_size)
+      |> stream(:gifs, gifs)
 
     {:noreply, socket}
   end
 
   def render(assigns) do
     ~H"""
-    <div class="min-h-screen bg-gray-900 text-white">
-      <!-- Header -->
-      <div class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h1 class="text-2xl font-bold font-mono">GIF FEED</h1>
-            <p class="text-gray-400 text-sm font-mono">
-              Discover, upvote, and share GIFs cut from the library
-            </p>
-          </div>
+    <div>
+      <.page_header title="Explore" subtitle="Every public GIF made here">
+        <:actions>
+          <button type="button" phx-click="random_gif" class="btn-secondary">Random GIF</button>
+          <.link navigate={~p"/"} class="btn-primary">Make a GIF</.link>
+        </:actions>
+      </.page_header>
 
-          <div class="flex items-center gap-4">
-            <button
-              phx-click="random_gif"
-              class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
-              title="Generate random GIF from any video"
-            >
-              🎲 Random GIF
-            </button>
+      <.register_prompt :if={@show_register_prompt} on_close="dismiss_register_prompt" />
 
+      <div class="px-6 py-4">
+        <div class="max-w-7xl mx-auto">
+          <nav
+            class="inline-flex bg-stone-100 border border-stone-200 rounded-lg p-1 font-mono text-sm"
+            aria-label="Sort GIFs"
+          >
             <.link
-              navigate={~p"/"}
-              class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
+              patch={~p"/gifs"}
+              class={tab_class(@sort == "hot")}
+              aria-current={@sort == "hot" && "page"}
             >
-              MAKE A GIF
+              Hot
             </.link>
             <.link
-              navigate={~p"/add"}
-              class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
+              patch={~p"/gifs?sort=top"}
+              class={tab_class(@sort == "top")}
+              aria-current={@sort == "top" && "page"}
             >
-              + ADD VIDEO
+              Top
             </.link>
-          </div>
+            <.link
+              patch={~p"/gifs?sort=new"}
+              class={tab_class(@sort == "new")}
+              aria-current={@sort == "new" && "page"}
+            >
+              New
+            </.link>
+          </nav>
         </div>
       </div>
-      
-    <!-- Custom Register Flash -->
-      <%= if @show_register_flash do %>
-        <div class="fixed top-2 right-2 mr-2 w-80 sm:w-96 z-50 rounded-lg p-3 ring-1 bg-rose-50 text-rose-900 shadow-md ring-rose-500 fill-rose-900">
-          <p class="flex items-center gap-1.5 text-sm font-semibold leading-6">
-            <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
-              <path
-                fill-rule="evenodd"
-                d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a.75.75 0 100-1.5.75.75 0 000 1.5z"
-                clip-rule="evenodd"
-              />
-            </svg>
-            Account Required
-          </p>
-          <p class="mt-2 text-sm leading-5">
-            Create an account and log in to upvote GIFs.
-            <.link navigate={~p"/users/register"} class="font-semibold underline hover:no-underline">
-              Click here to register!
-            </.link>
-          </p>
-          <button
-            type="button"
-            class="group absolute top-1 right-1 p-2"
-            phx-click="close_register_flash"
-            aria-label="close"
-          >
-            <svg
-              class="h-5 w-5 opacity-40 group-hover:opacity-70"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                d="M6 18L18 6M6 6l12 12"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
-      <% end %>
-      
-    <!-- Filter Tabs -->
-      <div class="bg-gray-800 border-b border-gray-700 px-6 py-3">
-        <div class="flex items-center gap-1 max-w-7xl mx-auto">
-          <.link
-            patch={~p"/gifs?sort=hot"}
-            class={[
-              "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
-              if(@sort == "hot",
-                do: "bg-red-600 text-white",
-                else: "text-gray-400 hover:text-white hover:bg-gray-700"
-              )
-            ]}
-          >
-            🔥 Hot
-          </.link>
-          <.link
-            patch={~p"/gifs?sort=top"}
-            class={[
-              "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
-              if(@sort == "top",
-                do: "bg-orange-600 text-white",
-                else: "text-gray-400 hover:text-white hover:bg-gray-700"
-              )
-            ]}
-          >
-            ⭐ Top
-          </.link>
-          <.link
-            patch={~p"/gifs?sort=new"}
-            class={[
-              "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
-              if(@sort == "new",
-                do: "bg-blue-600 text-white",
-                else: "text-gray-400 hover:text-white hover:bg-gray-700"
-              )
-            ]}
-          >
-            🆕 New
-          </.link>
-        </div>
-      </div>
-      
-    <!-- GIF Grid -->
-      <div class="px-4 py-6">
-        <%= if @loading do %>
-          <div class="text-center py-12">
-            <div class="text-gray-400 font-mono">Loading GIFs...</div>
-          </div>
-        <% else %>
-          <%= if Enum.empty?(@gifs) do %>
-            <div class="text-center py-12">
-              <div class="text-gray-400 font-mono mb-4">No GIFs created yet</div>
-              <.link
-                navigate={~p"/"}
-                class="text-blue-400 hover:text-blue-300 font-mono"
+
+      <div class="px-6 pb-10">
+        <div class="max-w-7xl mx-auto">
+          <%= cond do %>
+            <% !@feed_loaded? -> %>
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                <div :for={_i <- 1..8} class="card overflow-hidden">
+                  <div class="aspect-video bg-stone-200 animate-pulse"></div>
+                  <div class="p-4 space-y-2">
+                    <div class="h-3 w-3/4 rounded bg-stone-200 animate-pulse"></div>
+                    <div class="h-3 w-1/2 rounded bg-stone-200 animate-pulse"></div>
+                  </div>
+                </div>
+              </div>
+            <% @feed_empty? -> %>
+              <div class="max-w-xl mx-auto border-2 border-dashed border-stone-300 rounded-xl bg-white py-16 px-6 text-center">
+                <span class="hero-film block h-10 w-10 text-stone-300 mx-auto"></span>
+                <h2 class="mt-4 font-mono uppercase tracking-wider text-stone-700">
+                  {empty_heading(@sort)}
+                </h2>
+                <p class="mt-1 text-sm text-stone-500">
+                  GIFs show up here once their creators post them.
+                </p>
+                <.link navigate={~p"/"} class="btn-primary mt-6">Make a GIF</.link>
+              </div>
+            <% true -> %>
+              <div
+                id="gif-feed"
+                phx-update="stream"
+                class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
               >
-                Create the first GIF →
-              </.link>
-            </div>
-          <% else %>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 max-w-7xl mx-auto">
-              <%= for gif <- @gifs do %>
-                <div class="bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-gray-600 transition-colors">
-                  <!-- GIF Display -->
-                  <div 
-                    class="aspect-video bg-gray-700 flex items-center justify-center relative cursor-pointer hover:bg-gray-600 transition-colors"
+                <div
+                  :for={{dom_id, gif} <- @streams.gifs}
+                  id={dom_id}
+                  class="card card-hover overflow-hidden flex flex-col"
+                >
+                  <div
+                    class="relative aspect-video bg-stone-100 border-b border-stone-200 overflow-hidden cursor-pointer"
                     phx-click="view_gif"
                     phx-value-gif_id={gif.id}
-                    title="Click to view GIF details"
+                    title="View GIF details"
                   >
-                    <%= if gif.gif && gif.gif.gif_data do %>
+                    <%= if gif.gif do %>
                       <img
-                        src={"data:image/gif;base64,#{NathanForUs.Gif.to_base64(gif.gif)}"}
+                        src={~p"/gif/#{gif.gif.id}/poster"}
+                        loading="lazy"
                         alt={gif.title || "GIF"}
                         class="w-full h-full object-cover"
+                        onmouseenter={"this.src='/gif/#{gif.gif.id}'"}
+                        onmouseleave={"this.src='/gif/#{gif.gif.id}/poster'"}
+                        onfocus={"this.src='/gif/#{gif.gif.id}'"}
+                        onblur={"this.src='/gif/#{gif.gif.id}/poster'"}
                       />
+                      <span class="badge badge-neutral absolute top-2 right-2 bg-white/80 backdrop-blur">
+                        GIF
+                      </span>
+                      <span :if={gif.posted_at} class="badge badge-brand absolute top-2 left-2">
+                        POSTED
+                      </span>
                     <% else %>
-                      <div class="text-gray-400 font-mono text-sm text-center p-4">
-                        <div>GIF</div>
-                        <div class="text-xs mt-1">
-                          Frames {gif.start_frame_index}-{gif.end_frame_index}
-                        </div>
-                      </div>
-                    <% end %>
-                    
-    <!-- Vote count overlay -->
-                    <%= if gif.upvotes_count > 0 do %>
-                      <div class="absolute top-2 right-2 bg-black bg-opacity-75 text-white px-2 py-1 rounded text-xs font-mono">
-                        ⬆ {gif.upvotes_count}
+                      <div class="w-full h-full flex items-center justify-center font-mono text-xs text-stone-400">
+                        This GIF is being rebuilt
                       </div>
                     <% end %>
                   </div>
-                  
-    <!-- GIF Info & Actions -->
-                  <div class="p-4">
-                    <h3 class="text-white font-mono text-sm mb-2 truncate">
-                      {gif.title || "Untitled GIF"}
+
+                  <div class="p-4 flex flex-col flex-1">
+                    <h3
+                      :if={gif.title && gif.title != "Untitled GIF"}
+                      class="font-mono text-sm text-stone-900 mb-1 truncate"
+                    >
+                      {gif.title}
                     </h3>
 
-                    <div class="text-gray-400 text-xs font-mono mb-3 leading-relaxed">
-                      <%= if gif.caption_preview && gif.caption_preview != "" do %>
+                    <div class="text-xs text-stone-500 leading-relaxed line-clamp-2 min-h-[2rem] mb-3">
+                      <%= if gif.caption_preview != "" do %>
                         "{gif.caption_preview}"
                       <% else %>
                         From: {gif.video.title}
                       <% end %>
                     </div>
-                    
-    <!-- Vote and Action Row -->
+
+                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-stone-500 mb-3 mt-auto">
+                      <span>by {poster_name(gif)}</span>
+                      <span :if={gif.gif && gif.gif.duration_ms} aria-hidden="true">&middot;</span>
+                      <span :if={gif.gif && gif.gif.duration_ms}>
+                        {format_duration(gif.gif.duration_ms)}
+                      </span>
+                      <span aria-hidden="true">&middot;</span>
+                      <span>{format_time_ago(gif.inserted_at)}</span>
+                    </div>
+
                     <div class="flex items-center justify-between">
-                      <div class="flex items-center gap-3">
-                        <!-- Upvote Button -->
-                        <button
-                          phx-click="upvote_gif"
-                          phx-value-gif_id={gif.id}
-                          class={[
-                            "flex items-center gap-1 px-2 py-1 rounded text-xs font-mono transition-colors",
-                            if(Map.get(@user_votes, gif.id) == "up",
-                              do: "bg-orange-600 text-white",
-                              else: "bg-gray-700 text-gray-300 hover:bg-orange-600 hover:text-white"
-                            )
-                          ]}
-                          title="Upvote this GIF"
-                        >
-                          ⬆ {gif.upvotes_count}
-                        </button>
-                        
-    <!-- Time ago -->
-                        <div class="text-gray-500 text-xs font-mono">
-                          {format_time_ago(gif.inserted_at)}
-                        </div>
-                      </div>
-                      
-    <!-- Share Button -->
                       <button
-                        phx-click="share_gif"
+                        type="button"
+                        phx-click="upvote_gif"
                         phx-value-gif_id={gif.id}
-                        class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-mono transition-colors flex items-center gap-1"
-                        title="Copy a share link to this GIF"
+                        class={vote_button_class(gif.user_vote)}
+                        title="Upvote this GIF"
                       >
-                        <span>🔗</span> Share
+                        <span class="hero-arrow-up-mini h-4 w-4"></span>
+                        {gif.upvotes_count}
+                      </button>
+
+                      <button
+                        type="button"
+                        class="btn-secondary px-3 py-1 text-xs"
+                        data-copy={url(~p"/g/#{gif.id}")}
+                      >
+                        Share
                       </button>
                     </div>
                   </div>
                 </div>
-              <% end %>
-            </div>
+              </div>
+
+              <div id="feed-tail" phx-viewport-bottom={!@end_of_feed? && "load_more"}></div>
+
+              <div :if={@end_of_feed?} class="text-center py-10 font-mono text-sm text-stone-500">
+                You've seen it all —
+                <.link navigate={~p"/"} class="text-brand-deep hover:text-brand">make one</.link>
+              </div>
           <% end %>
-        <% end %>
+        </div>
       </div>
-      
-      <!-- GIF Modal -->
-      <%= if @show_gif_modal and @modal_gif do %>
-        <NathanForUsWeb.Components.GifModal.render 
-          gif_data={@modal_gif}
-          captions={@modal_captions}
-          show_share_button={@current_user != nil}
-        />
-      <% end %>
+
+      <GifModal.render
+        :if={@show_gif_modal && @modal_gif}
+        gif_data={@modal_gif}
+        captions={@modal_captions}
+        user_vote={Map.get(@modal_gif, :user_vote)}
+      />
     </div>
     """
   end
 
-  # Helper functions
+  # Feed loading
 
-  defp load_gifs_by_sort("hot"), do: Viral.get_hot_browseable_gifs()
-  defp load_gifs_by_sort("top"), do: Viral.get_top_browseable_gifs()
-  defp load_gifs_by_sort("new"), do: Viral.get_new_browseable_gifs()
-  defp load_gifs_by_sort(_), do: Viral.get_hot_browseable_gifs()
+  defp load_feed(socket, sort) do
+    gifs = fetch_page(sort, 1) |> decorate(socket)
 
-  defp load_user_votes(socket) do
-    user_id = socket.assigns.current_user && socket.assigns.current_user.id
-    session_id = socket.assigns.session_id
-    gif_ids = Enum.map(socket.assigns.gifs, & &1.id)
-
-    user_votes =
-      if user_id do
-        Enum.reduce(gif_ids, %{}, fn gif_id, acc ->
-          case Viral.get_user_vote(gif_id, user_id: user_id) do
-            nil -> acc
-            vote_type -> Map.put(acc, gif_id, vote_type)
-          end
-        end)
-      else
-        Enum.reduce(gif_ids, %{}, fn gif_id, acc ->
-          case Viral.get_user_vote(gif_id, session_id: session_id) do
-            nil -> acc
-            vote_type -> Map.put(acc, gif_id, vote_type)
-          end
-        end)
-      end
-
-    assign(socket, :user_votes, user_votes)
+    socket
+    |> assign(:sort, sort)
+    |> assign(:page, 1)
+    |> assign(:feed_loaded?, true)
+    |> assign(:feed_empty?, gifs == [])
+    |> assign(:end_of_feed?, length(gifs) < @page_size)
+    |> stream(:gifs, gifs, reset: true)
   end
 
-  defp refresh_gif_votes(socket, gif_id) do
-    # Update just the specific GIF's vote counts in the current list,
-    # preserving decorations like :caption_preview added at load time
-    updated_gifs =
-      Enum.map(socket.assigns.gifs, fn gif ->
-        if gif.id == gif_id do
-          case NathanForUs.Repo.get(NathanForUs.Viral.BrowseableGif, gif_id) do
-            nil ->
-              gif
+  defp fetch_page(sort, page) do
+    offset = (page - 1) * @page_size
 
-            fresh ->
-              %{
-                gif
-                | upvotes_count: fresh.upvotes_count,
-                  downvotes_count: fresh.downvotes_count,
-                  hot_score: fresh.hot_score
-              }
-          end
-        else
-          gif
-        end
-      end)
-
-    assign(socket, :gifs, updated_gifs)
-  end
-
-  defp format_time_ago(datetime) do
-    now = DateTime.utc_now()
-    diff = DateTime.diff(now, datetime, :second)
-
-    cond do
-      diff < 60 -> "#{diff}s ago"
-      diff < 3600 -> "#{div(diff, 60)}m ago"
-      diff < 86400 -> "#{div(diff, 3600)}h ago"
-      diff < 2_592_000 -> "#{div(diff, 86400)}d ago"
-      true -> "#{div(diff, 2_592_000)}mo ago"
+    case sort do
+      "top" -> Viral.get_top_browseable_gifs(@page_size, offset)
+      "new" -> Viral.get_new_browseable_gifs(@page_size, offset)
+      _hot -> Viral.get_hot_browseable_gifs(@page_size, offset)
     end
   end
 
-  defp add_caption_data_to_gifs(gifs) do
+  # Adds :caption_preview and :user_vote to each GIF with two batched
+  # queries (instead of one per GIF).
+  defp decorate(gifs, socket) do
+    frame_ids =
+      gifs
+      |> Enum.flat_map(fn gif -> (gif.gif && gif.gif.frame_ids) || [] end)
+      |> Enum.uniq()
+
+    captions_by_frame = Video.get_frame_captions_for_ids(frame_ids)
+    votes = Viral.get_user_votes(Enum.map(gifs, & &1.id), vote_identity(socket))
+
     Enum.map(gifs, fn gif ->
-      caption_text = extract_gif_captions(gif)
-      Map.put(gif, :caption_preview, caption_text)
+      gif
+      |> Map.put(:caption_preview, caption_preview(gif, captions_by_frame))
+      |> Map.put(:user_vote, Map.get(votes, gif.id))
     end)
   end
 
-  defp extract_gif_captions(gif) do
-    case gif.frame_data do
+  defp caption_preview(%{gif: %{frame_ids: frame_ids}}, captions_by_frame)
+       when is_list(frame_ids) do
+    text =
+      frame_ids
+      |> Enum.flat_map(&Map.get(captions_by_frame, &1, []))
+      |> Enum.uniq()
+      |> Enum.join(" ")
+
+    if String.length(text) > 250 do
+      String.slice(text, 0, 250) <> "…"
+    else
+      text
+    end
+  end
+
+  defp caption_preview(_gif, _captions_by_frame), do: ""
+
+  defp vote_identity(socket) do
+    if user = socket.assigns.current_user do
+      [user_id: user.id]
+    else
+      [session_id: socket.assigns.session_id]
+    end
+  end
+
+  # Refreshes a single GIF in place after a vote (stream + open modal).
+  defp refresh_gif(socket, gif_id) do
+    case Viral.get_browseable_gif(gif_id) do
       nil ->
-        ""
+        socket
 
-      frame_data_json ->
-        try do
-          case Jason.decode(frame_data_json) do
-            {:ok, %{"frame_ids" => frame_ids}} when is_list(frame_ids) ->
-              # Get captions for all frames
-              case NathanForUs.Video.get_frames_captions(frame_ids) do
-                {:ok, captions_map} ->
-                  # Flatten all captions from all frames and get unique ones
-                  caption_text =
-                    captions_map
-                    |> Map.values()
-                    |> List.flatten()
-                    |> Enum.uniq()
-                    |> Enum.join(" ")
-                    |> String.slice(0, 250)
+      fresh ->
+        [fresh] = decorate([fresh], socket)
+        socket = stream_insert(socket, :gifs, fresh)
 
-                  if String.length(caption_text) == 250 do
-                    caption_text <> "..."
-                  else
-                    caption_text
-                  end
-
-                _ ->
-                  ""
-              end
-
-            _ ->
-              ""
-          end
-        rescue
-          _ -> ""
+        if socket.assigns.modal_gif && socket.assigns.modal_gif.id == gif_id do
+          assign(socket, :modal_gif, fresh)
+        else
+          socket
         end
     end
   end
+
+  # Modal deep links
+
+  defp resolve_modal(socket, params) do
+    case Map.get(params, "gif_id") do
+      nil ->
+        {:noreply, assign(socket, show_gif_modal: false, modal_gif: nil, modal_captions: [])}
+
+      gif_id_str ->
+        with {gif_id, ""} <- Integer.parse(gif_id_str),
+             %{} = gif <- Viral.get_browseable_gif(gif_id) do
+          captions =
+            if gif.gif && gif.gif.frame_ids do
+              Video.get_gif_captions(gif.gif.frame_ids)
+            else
+              []
+            end
+
+          [gif] = decorate([gif], socket)
+
+          {:noreply,
+           assign(socket, show_gif_modal: true, modal_gif: gif, modal_captions: captions)}
+        else
+          _ ->
+            {:noreply,
+             socket
+             |> assign(show_gif_modal: false, modal_gif: nil, modal_captions: [])
+             |> put_flash(:error, "That GIF is gone or private")
+             |> push_patch(to: feed_path(socket.assigns.sort))}
+        end
+    end
+  end
+
+  # Paths and presentation helpers
+
+  defp feed_path("hot"), do: ~p"/gifs"
+  defp feed_path(sort), do: ~p"/gifs?sort=#{sort}"
+
+  defp feed_path("hot", gif_id), do: ~p"/gifs?gif_id=#{gif_id}"
+  defp feed_path(sort, gif_id), do: ~p"/gifs?sort=#{sort}&gif_id=#{gif_id}"
+
+  defp normalize_sort(sort) when sort in @sorts, do: sort
+  defp normalize_sort(_sort), do: "hot"
+
+  defp tab_class(true), do: "bg-white text-stone-900 rounded-md shadow-sm px-3 py-1.5"
+  defp tab_class(false), do: "px-3 py-1.5 text-stone-500 hover:text-stone-800"
+
+  defp empty_heading("top"), do: "No top GIFs yet"
+  defp empty_heading("new"), do: "Nothing new — be the first"
+  defp empty_heading(_sort), do: "Nothing hot yet"
 end
