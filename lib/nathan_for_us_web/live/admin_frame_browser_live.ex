@@ -3,7 +3,10 @@ defmodule NathanForUsWeb.AdminFrameBrowserLive do
 
   on_mount {NathanForUsWeb.UserAuth, :ensure_admin}
 
+  import NathanForUsWeb.Components.AdminNav
+
   alias NathanForUs.{Video, AdminService}
+  alias NathanForUs.Video.FrameImage
 
   @impl true
   def mount(_params, _session, socket) do
@@ -11,6 +14,7 @@ defmodule NathanForUsWeb.AdminFrameBrowserLive do
 
     socket =
       socket
+      |> assign(:page_title, "Admin Frame Browser")
       |> assign(:videos, videos)
       |> assign(:selected_video, nil)
       |> assign(:frames, [])
@@ -87,8 +91,12 @@ defmodule NathanForUsWeb.AdminFrameBrowserLive do
   end
 
   def handle_event("select_all_frames", _params, socket) do
-    frame_count = length(socket.assigns.frames)
-    all_indices = Enum.to_list(0..(frame_count - 1))
+    all_indices =
+      case socket.assigns.frames do
+        [] -> []
+        frames -> Enum.to_list(0..(length(frames) - 1))
+      end
+
     {:noreply, assign(socket, :selected_frame_indices, all_indices)}
   end
 
@@ -194,7 +202,7 @@ defmodule NathanForUsWeb.AdminFrameBrowserLive do
         # Prepare frame data for client-side processing
         frame_urls =
           Enum.map(selected_frames, fn frame ->
-            "data:image/jpeg;base64,#{encode_image_data(frame.image_data)}"
+            "data:image/jpeg;base64,#{FrameImage.base64(frame.image_data)}"
           end)
 
         # Calculate framerate based on video FPS
@@ -337,23 +345,6 @@ defmodule NathanForUsWeb.AdminFrameBrowserLive do
   end
 
   defp format_timestamp(_), do: "0:00"
-
-  defp encode_image_data(nil), do: ""
-
-  defp encode_image_data(hex_data) when is_binary(hex_data) do
-    case String.starts_with?(hex_data, "\\x") do
-      true ->
-        hex_string = String.slice(hex_data, 2..-1//1)
-
-        case Base.decode16(hex_string, case: :lower) do
-          {:ok, binary_data} -> Base.encode64(binary_data)
-          :error -> ""
-        end
-
-      false ->
-        Base.encode64(hex_data)
-    end
-  end
 
   defp format_duration(duration_ms) when is_integer(duration_ms) do
     total_seconds = div(duration_ms, 1000)

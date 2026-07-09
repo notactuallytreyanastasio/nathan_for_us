@@ -1,6 +1,8 @@
 defmodule NathanForUsWeb.AdminVideoUploadLive do
   use NathanForUsWeb, :live_view
 
+  import NathanForUsWeb.Components.AdminNav
+
   alias NathanForUs.{Video, VideoProcessor}
 
   @impl true
@@ -65,6 +67,7 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
           |> assign(:processing_status, "Starting upload...")
           |> assign(:processing_progress, 0)
           |> assign(:error_message, nil)
+          |> assign(:success_message, nil)
 
         {:noreply, socket}
     end
@@ -82,15 +85,34 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
 
   @impl true
   def handle_info({:start_processing, title, description}, socket) do
-    # Process uploads in a task to avoid blocking the LiveView
-    task =
-      Task.async(fn ->
-        process_video_upload(socket, title, description)
-      end)
+    # Uploads MUST be consumed in the LiveView process, so save the files
+    # here before handing the heavy processing off to a task.
+    case save_uploads(socket) do
+      {:ok, video_file_path, caption_file_path} ->
+        lv = self()
 
-    socket = assign(socket, :processing_task, task)
+        task =
+          Task.async(fn ->
+            process_video_upload(lv, title, description, video_file_path, caption_file_path)
+          end)
 
-    {:noreply, socket}
+        socket =
+          socket
+          |> assign(:processing_task, task)
+          |> assign(:processing_status, "Creating video record...")
+          |> assign(:processing_progress, 20)
+
+        {:noreply, socket}
+
+      {:error, message} ->
+        socket =
+          socket
+          |> assign(:processing_status, nil)
+          |> assign(:processing_progress, 0)
+          |> assign(:error_message, message)
+
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -121,11 +143,13 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
         {:noreply, socket}
 
       {:error, error} ->
+        error_text = if is_binary(error), do: error, else: inspect(error)
+
         socket =
           socket
           |> assign(:processing_status, nil)
           |> assign(:processing_progress, 0)
-          |> assign(:error_message, "Processing failed: #{error}")
+          |> assign(:error_message, "Processing failed: #{error_text}")
           |> assign(:success_message, nil)
 
         {:noreply, socket}
@@ -152,16 +176,17 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
     {:noreply, socket}
   end
 
-  defp process_video_upload(socket, title, description) do
+  defp save_uploads(socket) do
+    video_file_path = save_upload_file(socket, :video)
+    caption_file_path = maybe_save_caption_file(socket)
+    {:ok, video_file_path, caption_file_path}
+  rescue
+    error ->
+      {:error, "Failed to save uploaded files: #{Exception.message(error)}"}
+  end
+
+  defp process_video_upload(lv, title, description, video_file_path, caption_file_path) do
     try do
-      # Save uploaded files
-      send(self(), {:processing_update, "Saving uploaded files...", 10})
-
-      video_file_path = save_upload_file(socket, :video)
-      caption_file_path = maybe_save_caption_file(socket)
-
-      send(self(), {:processing_update, "Creating video record...", 20})
-
       # Create video record
       video_params = %{
         title: title,
@@ -172,7 +197,7 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
 
       {:ok, video} = Video.create_video(video_params)
 
-      send(self(), {:processing_update, "Processing video frames...", 30})
+      send(lv, {:processing_update, "Processing video frames...", 30})
 
       # Process video using VideoProcessor
       case VideoProcessor.process_video_with_captions(
@@ -181,7 +206,7 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
              caption_file_path
            ) do
         {:ok, _result} ->
-          send(self(), {:processing_update, "Finalizing...", 90})
+          send(lv, {:processing_update, "Finalizing...", 90})
 
           # Update video status
           Video.update_video(video, %{status: "completed"})
@@ -235,62 +260,73 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="min-h-screen bg-gray-900 text-white">
-      <div class="container mx-auto px-4 py-8">
-        <div class="max-w-4xl mx-auto">
-          <h1 class="text-3xl font-bold mb-8 text-center">Admin Video Upload</h1>
+    <div class="min-h-screen">
+      <.page_header
+        title="Upload Video"
+        subtitle="Server-side ingest: frames are extracted with ffmpeg on this machine"
+      />
 
-          <%= if @error_message do %>
-            <div class="bg-red-600 text-white p-4 rounded-lg mb-6">
-              <p>{@error_message}</p>
-            </div>
-          <% end %>
+      <div class="max-w-7xl mx-auto px-6 py-6">
+        <.admin_nav active={:upload} />
 
-          <%= if @success_message do %>
-            <div class="bg-green-600 text-white p-4 rounded-lg mb-6">
-              <p>{@success_message}</p>
-            </div>
-          <% end %>
+        <div class="max-w-3xl">
+          <div :if={@error_message} class="card border-l-4 border-l-red-500 p-4 mb-6">
+            <p class="font-mono text-sm text-red-700">{@error_message}</p>
+          </div>
 
-          <%= if @processing_status do %>
-            <div class="bg-blue-600 text-white p-4 rounded-lg mb-6">
-              <p class="mb-2">{@processing_status}</p>
-              <div class="w-full bg-blue-800 rounded-full h-2">
-                <div
-                  class="bg-blue-400 h-2 rounded-full transition-all duration-300"
-                  style={"width: #{@processing_progress}%"}
-                >
-                </div>
+          <div :if={@success_message} class="card border-l-4 border-l-emerald-500 p-4 mb-6">
+            <p class="font-mono text-sm text-emerald-700">{@success_message}</p>
+          </div>
+
+          <div :if={@processing_status} class="card p-4 mb-6">
+            <p class="font-mono text-sm text-stone-700 mb-2">{@processing_status}</p>
+            <div class="w-full bg-stone-100 rounded-full h-2">
+              <div
+                class="bg-brand h-2 rounded-full transition-all duration-300"
+                style={"width: #{@processing_progress}%"}
+              >
               </div>
-              <p class="text-sm mt-1">{@processing_progress}% complete</p>
             </div>
-          <% end %>
+            <p class="font-mono text-xs text-stone-500 mt-1">{@processing_progress}% complete</p>
+          </div>
 
           <form phx-submit="upload" phx-change="validate" class="space-y-6">
-            <div class="bg-gray-800 p-6 rounded-lg">
-              <h2 class="text-xl font-semibold mb-4">Video Details</h2>
+            <div class="card p-6">
+              <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-4">
+                Video details
+              </h2>
 
               <div class="space-y-4">
                 <div>
-                  <label for="title" class="block text-sm font-medium mb-2">Video Title *</label>
+                  <label
+                    for="title"
+                    class="block font-mono uppercase tracking-wider text-xs text-stone-500 mb-1"
+                  >
+                    Title *
+                  </label>
                   <input
                     type="text"
                     name="video_upload[title]"
                     id="title"
                     value={@video_title}
-                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    class="input"
                     placeholder="Enter video title"
                     required
                   />
                 </div>
 
                 <div>
-                  <label for="description" class="block text-sm font-medium mb-2">Description</label>
+                  <label
+                    for="description"
+                    class="block font-mono uppercase tracking-wider text-xs text-stone-500 mb-1"
+                  >
+                    Description
+                  </label>
                   <textarea
                     name="video_upload[description]"
                     id="description"
                     rows="3"
-                    class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    class="input"
                     placeholder="Enter video description"
                   ><%= @video_description %></textarea>
                 </div>
@@ -299,117 +335,101 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
 
             <div class="grid md:grid-cols-2 gap-6">
               <!-- Video Upload -->
-              <div class="bg-gray-800 p-6 rounded-lg">
-                <h3 class="text-lg font-semibold mb-4">Video File *</h3>
+              <div class="card p-6">
+                <h3 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-4">
+                  Video file *
+                </h3>
 
                 <div
-                  class="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center hover:border-gray-500 transition-colors"
+                  class="border-2 border-dashed border-stone-300 rounded-xl p-6 text-center hover:border-stone-400 transition-colors"
                   phx-drop-target={@uploads.video.ref}
                 >
-                  <svg
-                    class="mx-auto h-12 w-12 text-gray-400 mb-4"
-                    stroke="currentColor"
-                    fill="none"
-                    viewBox="0 0 48 48"
-                  >
-                    <path
-                      d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
+                  <span class="hero-film size-10 text-stone-300 mx-auto block mb-3"></span>
 
                   <label for={@uploads.video.ref} class="cursor-pointer">
-                    <span class="text-blue-400 hover:text-blue-300">Upload video file</span>
-                    <span class="text-gray-400"> or drag and drop</span>
+                    <span class="font-mono text-sm text-brand-deep hover:text-brand">
+                      Choose a video
+                    </span>
+                    <span class="text-sm text-stone-500">or drag and drop</span>
                   </label>
 
-                  <p class="text-xs text-gray-500 mt-2">MP4, MOV, AVI, MKV up to 5GB</p>
+                  <p class="font-mono text-xs text-stone-400 mt-2">MP4, MOV, AVI, MKV up to 5GB</p>
 
                   <.live_file_input upload={@uploads.video} class="sr-only" />
                 </div>
 
-                <%= for entry <- @uploads.video.entries do %>
-                  <div class="mt-4 p-3 bg-gray-700 rounded-lg flex items-center justify-between">
-                    <div>
-                      <p class="text-sm font-medium">{entry.client_name}</p>
-                      <p class="text-xs text-gray-400">{format_file_size(entry.client_size)}</p>
-                    </div>
-                    <button
-                      type="button"
-                      phx-click="cancel-upload"
-                      phx-value-ref={entry.ref}
-                      class="text-red-400 hover:text-red-300"
-                    >
-                      ✕
-                    </button>
+                <div
+                  :for={entry <- @uploads.video.entries}
+                  class="mt-4 p-3 bg-stone-100 border border-stone-200 rounded-lg flex items-center justify-between gap-2"
+                >
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium text-stone-900 truncate">{entry.client_name}</p>
+                    <p class="font-mono text-xs text-stone-500">
+                      {format_file_size(entry.client_size)}
+                    </p>
                   </div>
-                <% end %>
+                  <button
+                    type="button"
+                    phx-click="cancel-upload"
+                    phx-value-ref={entry.ref}
+                    class="btn-ghost px-2 py-1"
+                    aria-label="Remove video file"
+                  >
+                    <span class="hero-x-mark-mini size-4"></span>
+                  </button>
+                </div>
               </div>
               
     <!-- Caption Upload -->
-              <div class="bg-gray-800 p-6 rounded-lg">
-                <h3 class="text-lg font-semibold mb-4">Caption File (optional)</h3>
+              <div class="card p-6">
+                <h3 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-4">
+                  Caption file (optional)
+                </h3>
 
                 <div
-                  class="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center hover:border-gray-500 transition-colors"
+                  class="border-2 border-dashed border-stone-300 rounded-xl p-6 text-center hover:border-stone-400 transition-colors"
                   phx-drop-target={@uploads.captions.ref}
                 >
-                  <svg
-                    class="mx-auto h-12 w-12 text-gray-400 mb-4"
-                    stroke="currentColor"
-                    fill="none"
-                    viewBox="0 0 48 48"
-                  >
-                    <path
-                      d="M9 12h6m6 0h6m-6 6h6m-12 6h12M9 24h6"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
+                  <span class="hero-document-text size-10 text-stone-300 mx-auto block mb-3"></span>
 
                   <label for={@uploads.captions.ref} class="cursor-pointer">
-                    <span class="text-blue-400 hover:text-blue-300">Upload caption file</span>
-                    <span class="text-gray-400"> or drag and drop</span>
+                    <span class="font-mono text-sm text-brand-deep hover:text-brand">
+                      Choose a caption file
+                    </span>
+                    <span class="text-sm text-stone-500">or drag and drop</span>
                   </label>
 
-                  <p class="text-xs text-gray-500 mt-2">SRT, VTT up to 10MB — optional</p>
+                  <p class="font-mono text-xs text-stone-400 mt-2">SRT, VTT up to 10MB</p>
 
                   <.live_file_input upload={@uploads.captions} class="sr-only" />
                 </div>
 
-                <%= for entry <- @uploads.captions.entries do %>
-                  <div class="mt-4 p-3 bg-gray-700 rounded-lg flex items-center justify-between">
-                    <div>
-                      <p class="text-sm font-medium">{entry.client_name}</p>
-                      <p class="text-xs text-gray-400">{format_file_size(entry.client_size)}</p>
-                    </div>
-                    <button
-                      type="button"
-                      phx-click="cancel-caption-upload"
-                      phx-value-ref={entry.ref}
-                      class="text-red-400 hover:text-red-300"
-                    >
-                      ✕
-                    </button>
+                <div
+                  :for={entry <- @uploads.captions.entries}
+                  class="mt-4 p-3 bg-stone-100 border border-stone-200 rounded-lg flex items-center justify-between gap-2"
+                >
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium text-stone-900 truncate">{entry.client_name}</p>
+                    <p class="font-mono text-xs text-stone-500">
+                      {format_file_size(entry.client_size)}
+                    </p>
                   </div>
-                <% end %>
+                  <button
+                    type="button"
+                    phx-click="cancel-caption-upload"
+                    phx-value-ref={entry.ref}
+                    class="btn-ghost px-2 py-1"
+                    aria-label="Remove caption file"
+                  >
+                    <span class="hero-x-mark-mini size-4"></span>
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div class="flex justify-center">
-              <button
-                type="submit"
-                disabled={@processing_status != nil}
-                class="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors"
-              >
-                <%= if @processing_status do %>
-                  Processing...
-                <% else %>
-                  Upload and Process Video
-                <% end %>
+            <div>
+              <button type="submit" disabled={@processing_status != nil} class="btn-primary">
+                {if @processing_status, do: "Processing...", else: "Upload and process video"}
               </button>
             </div>
           </form>

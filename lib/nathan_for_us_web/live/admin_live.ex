@@ -1,6 +1,8 @@
 defmodule NathanForUsWeb.AdminLive do
   use NathanForUsWeb, :live_view
 
+  import NathanForUsWeb.Components.AdminNav
+
   alias NathanForUs.AdminService
 
   on_mount {NathanForUsWeb.UserAuth, :ensure_authenticated}
@@ -31,17 +33,6 @@ defmodule NathanForUsWeb.AdminLive do
     {:noreply, assign(socket, stats: stats)}
   end
 
-  def handle_event("generate_usernames", _params, socket) do
-    case AdminService.generate_usernames_from_emails() do
-      {:ok, count} ->
-        {:noreply,
-         put_flash(socket, :info, "Successfully generated #{count} usernames from emails!")}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to generate usernames: #{reason}")}
-    end
-  end
-
   def handle_event("fail_stale_processing", _params, socket) do
     count = NathanForUs.Video.fail_stale_processing()
     stats = AdminService.get_admin_stats()
@@ -70,162 +61,102 @@ defmodule NathanForUsWeb.AdminLive do
 
   def render(assigns) do
     ~H"""
-    <div class="min-h-screen bg-zinc-50 p-6">
-      <div class="max-w-6xl mx-auto">
-        <div class="mb-8">
-          <h1 class="text-3xl font-bold text-zinc-900 mb-2">Admin Dashboard</h1>
-          <p class="text-zinc-600">Site administration</p>
-        </div>
-
-    <!-- Admin Navigation -->
-        <div class="mb-8">
-          <nav class="flex space-x-4">
-            <.link
-              navigate={~p"/admin"}
-              class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Dashboard
-            </.link>
-            <.link
-              navigate={~p"/admin/upload"}
-              class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-            >
-              Upload Video
-            </.link>
-            <.link
-              navigate={~p"/admin/frames"}
-              class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-            >
-              Browse Frames
-            </.link>
-            <.link
-              navigate={~p"/admin/cache"}
-              class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
-            >
-              Cache Admin
-            </.link>
-            <.link
-              navigate={~p"/admin/dashboard"}
-              class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-            >
-              🔍 System Monitor
-            </.link>
-          </nav>
-        </div>
-
-    <!-- Stats Section -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8">
-          <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200">
-            <p class="text-sm font-medium text-zinc-600">Videos</p>
-            <p class="text-2xl font-bold text-zinc-900">
-              {Map.get(@stats, :total_videos, 0)}
-              <span class="text-sm font-normal text-zinc-500">
-                ({Map.get(@stats, :completed_videos, 0)} processed)
-              </span>
-            </p>
-          </div>
-
-          <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200">
-            <p class="text-sm font-medium text-zinc-600">Frames</p>
-            <p class="text-2xl font-bold text-zinc-900">{Map.get(@stats, :total_frames, 0)}</p>
-          </div>
-
-          <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200">
-            <p class="text-sm font-medium text-zinc-600">GIFs</p>
-            <p class="text-2xl font-bold text-green-600">
-              {Map.get(@stats, :total_gifs, 0)}
-              <span class="text-sm font-normal text-zinc-500">
-                ({Map.get(@stats, :public_gifs, 0)} public)
-              </span>
-            </p>
-          </div>
-
-          <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200">
-            <p class="text-sm font-medium text-zinc-600">Users</p>
-            <p class="text-2xl font-bold text-zinc-900">{Map.get(@stats, :total_users, 0)}</p>
-          </div>
-        </div>
-
-        <div class="mb-8">
-          <button
-            type="button"
-            phx-click="refresh_stats"
-            class="inline-flex items-center px-4 py-2 border border-zinc-300 text-sm font-medium rounded-md text-zinc-700 bg-white hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-          >
-            Refresh Stats
+    <div class="min-h-screen">
+      <.page_header title="Admin Dashboard" subtitle="Site administration">
+        <:actions>
+          <button type="button" phx-click="refresh_stats" class="btn-secondary">
+            <span class="hero-arrow-path-mini size-4"></span> Refresh stats
           </button>
+        </:actions>
+      </.page_header>
+
+      <div class="max-w-7xl mx-auto px-6 py-6">
+        <.admin_nav active={:dashboard} />
+
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+          <div class="card p-5">
+            <p class="font-mono uppercase tracking-wider text-xs text-stone-500">Videos</p>
+            <p class="mt-1 font-mono text-2xl font-bold text-stone-900">
+              {Map.get(@stats, :total_videos, 0)}
+            </p>
+            <p class="text-xs text-stone-500 font-mono">
+              {Map.get(@stats, :completed_videos, 0)} processed
+            </p>
+          </div>
+
+          <div class="card p-5">
+            <p class="font-mono uppercase tracking-wider text-xs text-stone-500">Frames</p>
+            <p class="mt-1 font-mono text-2xl font-bold text-stone-900">
+              {Map.get(@stats, :total_frames, 0)}
+            </p>
+          </div>
+
+          <div class="card p-5">
+            <p class="font-mono uppercase tracking-wider text-xs text-stone-500">GIFs</p>
+            <p class="mt-1 font-mono text-2xl font-bold text-stone-900">
+              {Map.get(@stats, :total_gifs, 0)}
+            </p>
+            <p class="text-xs text-stone-500 font-mono">
+              {Map.get(@stats, :public_gifs, 0)} public
+            </p>
+          </div>
+
+          <div class="card p-5">
+            <p class="font-mono uppercase tracking-wider text-xs text-stone-500">Users</p>
+            <p class="mt-1 font-mono text-2xl font-bold text-stone-900">
+              {Map.get(@stats, :total_users, 0)}
+            </p>
+          </div>
         </div>
 
-    <!-- Stalled Uploads Section -->
-        <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200 mb-8">
-          <h2 class="text-xl font-bold text-zinc-900 mb-4">Stalled Uploads</h2>
-          <p class="text-zinc-600 mb-6">
+        <div class="card p-6 mb-6">
+          <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-2">
+            Stalled uploads
+          </h2>
+          <p class="text-sm text-stone-600 mb-4 max-w-2xl">
             A browser upload abandoned mid-slice leaves its video stuck in "processing".
             Mark anything processing for over 6 hours as failed.
           </p>
 
-          <button
-            phx-click="fail_stale_processing"
-            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-amber-600 hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500"
-          >
-            Clean Up Stalled Uploads
+          <button type="button" phx-click="fail_stale_processing" class="btn-secondary">
+            Clean up stalled uploads
           </button>
         </div>
 
-    <!-- Username Generation Section -->
-        <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200 mb-8">
-          <h2 class="text-xl font-bold text-zinc-900 mb-4">Username Generation</h2>
-          <p class="text-zinc-600 mb-6">
-            Generate usernames for all existing users who don't have one. Usernames will be created from the part of their email before the @ symbol.
+        <div class="card p-6 mb-6">
+          <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-2">
+            FFMPEG availability
+          </h2>
+          <p class="text-sm text-stone-600 mb-4 max-w-2xl">
+            Test if FFMPEG is installed and accessible in the system PATH. This is required
+            for server-side video processing and GIF encoding.
           </p>
 
-          <div class="flex items-center space-x-4">
-            <button
-              phx-click="generate_usernames"
-              class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
-            >
-              Generate Usernames from Emails
-            </button>
-          </div>
-        </div>
+          <button type="button" phx-click="test_ffmpeg" class="btn-secondary">
+            <span class="hero-check-circle-mini size-4"></span> Test FFMPEG
+          </button>
 
-    <!-- FFMPEG Testing Section -->
-        <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200 mb-8">
-          <h2 class="text-xl font-bold text-zinc-900 mb-4">FFMPEG Availability Test</h2>
-          <p class="text-zinc-600 mb-6">
-            Test if FFMPEG is installed and accessible in the system PATH. This is required for server-side video processing and GIF encoding.
-          </p>
-
-          <div class="flex items-center space-x-4">
-            <button
-              phx-click="test_ffmpeg"
-              class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-orange-600 hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
-            >
-              <svg class="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                >
-                </path>
-              </svg>
-              Test FFMPEG
-            </button>
-          </div>
-
-    <!-- Test Results -->
           <%= if @ffmpeg_test_result do %>
-            <div class={"mt-6 p-4 rounded-md #{if elem(@ffmpeg_test_result, 0) == :ok, do: "bg-green-50", else: "bg-red-50"}"}>
-              <h3 class={"text-lg font-medium mb-2 #{if elem(@ffmpeg_test_result, 0) == :ok, do: "text-green-900", else: "text-red-900"}"}>
+            <div class={[
+              "mt-6 p-4 rounded-lg border",
+              if(elem(@ffmpeg_test_result, 0) == :ok,
+                do: "bg-green-50 border-green-200",
+                else: "bg-red-50 border-red-200"
+              )
+            ]}>
+              <h3 class={[
+                "font-mono uppercase tracking-wider text-xs mb-2",
+                if(elem(@ffmpeg_test_result, 0) == :ok, do: "text-green-700", else: "text-red-700")
+              ]}>
                 {if elem(@ffmpeg_test_result, 0) == :ok,
-                  do: "FFMPEG Test Successful",
-                  else: "FFMPEG Test Failed"}
+                  do: "FFMPEG test successful",
+                  else: "FFMPEG test failed"}
               </h3>
-              <div class="text-sm">
-                <div class={"font-mono #{if elem(@ffmpeg_test_result, 0) == :ok, do: "text-green-800", else: "text-red-800"}"}>
-                  {elem(@ffmpeg_test_result, 1)}
-                </div>
+              <div class={[
+                "font-mono text-sm",
+                if(elem(@ffmpeg_test_result, 0) == :ok, do: "text-green-800", else: "text-red-800")
+              ]}>
+                {elem(@ffmpeg_test_result, 1)}
               </div>
             </div>
           <% end %>
