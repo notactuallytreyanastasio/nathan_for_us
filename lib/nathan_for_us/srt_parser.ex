@@ -1,7 +1,14 @@
 defmodule NathanForUs.SrtParser do
   @moduledoc """
-  Parser for SRT (SubRip Text) subtitle files.
+  Parser for SRT (SubRip Text) and WEBVTT subtitle files.
   Converts subtitle entries to structured data with timestamps and text.
+
+  WEBVTT content is detected by its leading "WEBVTT" header and normalized
+  to SRT form before parsing: the header block (and NOTE/STYLE/REGION blocks)
+  is stripped, dot-millisecond timestamps ("00:00:01.000" and the short
+  "MM:SS.mmm" form) are converted to SRT comma format, cue identifiers are
+  replaced with sequential indices, and cue settings after the timestamps
+  (e.g. "align:start position:0%") are dropped.
   """
 
   require Logger
@@ -16,8 +23,9 @@ defmodule NathanForUs.SrtParser do
         }
 
   @doc """
-  Parses an SRT file and returns a list of subtitle entries.
+  Parses an SRT or WEBVTT file and returns a list of subtitle entries.
   Timestamps are converted to milliseconds for easier processing.
+  The format is detected from the file content, so .vtt paths work too.
 
   ## Example
       iex> NathanForUs.SrtParser.parse_file("path/to/subtitles.srt")
@@ -43,11 +51,13 @@ defmodule NathanForUs.SrtParser do
   end
 
   @doc """
-  Parses SRT content string and returns subtitle entries.
+  Parses SRT or WEBVTT content string and returns subtitle entries.
   """
   def parse_content(content) when is_binary(content) do
     entries =
       content
+      |> strip_bom()
+      |> maybe_convert_webvtt()
       |> String.trim()
       |> String.split(~r/\n\s*\n/)
       |> Enum.map(&parse_subtitle_block/1)
@@ -118,6 +128,83 @@ defmodule NathanForUs.SrtParser do
   end
 
   # Private functions
+
+  defp strip_bom(<<0xFEFF::utf8, content::binary>>), do: content
+  defp strip_bom(content), do: content
+
+  defp maybe_convert_webvtt(content) do
+    if content |> String.trim_leading() |> String.starts_with?("WEBVTT") do
+      convert_webvtt_to_srt(content)
+    else
+      content
+    end
+  end
+
+  # Rewrites WEBVTT content into SRT form so the SRT block parsing can be reused.
+  defp convert_webvtt_to_srt(content) do
+    content
+    |> String.replace("\r\n", "\n")
+    |> String.trim()
+    |> String.split(~r/\n\s*\n/)
+    |> Enum.reject(&vtt_non_cue_block?/1)
+    |> Enum.map(&convert_vtt_cue/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.with_index(1)
+    |> Enum.map_join("\n\n", fn {{timing, text_lines}, index} ->
+      Enum.join([Integer.to_string(index), timing | text_lines], "\n")
+    end)
+  end
+
+  # The header block ("WEBVTT" plus any metadata lines) and NOTE/STYLE/REGION
+  # blocks carry no cues and are dropped.
+  defp vtt_non_cue_block?(block) do
+    trimmed = String.trim_leading(block)
+
+    String.starts_with?(trimmed, "WEBVTT") or
+      String.starts_with?(trimmed, "NOTE") or
+      String.starts_with?(trimmed, "STYLE") or
+      String.starts_with?(trimmed, "REGION")
+  end
+
+  # Converts one VTT cue block to {srt_timing_line, text_lines}.
+  # Drops optional cue identifiers (any lines before the "-->" line).
+  defp convert_vtt_cue(block) do
+    lines = block |> String.split("\n") |> Enum.map(&String.trim/1)
+
+    case Enum.split_while(lines, &(not String.contains?(&1, "-->"))) do
+      {_identifier_lines, [timing_line | text_lines]} ->
+        case convert_vtt_timing(timing_line) do
+          {:ok, timing} -> {timing, text_lines}
+          :error -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  # Extracts the timestamps and drops trailing cue settings
+  # (e.g. "00:00:01.000 --> 00:00:03.000 align:start position:0%").
+  defp convert_vtt_timing(timing_line) do
+    case Regex.run(~r/([\d:.]+)\s+-->\s+([\d:.]+)/, timing_line) do
+      [_full, start_str, end_str] ->
+        {:ok, "#{normalize_vtt_timestamp(start_str)} --> #{normalize_vtt_timestamp(end_str)}"}
+
+      _ ->
+        :error
+    end
+  end
+
+  # "HH:MM:SS.mmm" -> "HH:MM:SS,mmm"; short-form "MM:SS.mmm" gets a "00:" hour.
+  defp normalize_vtt_timestamp(timestamp) do
+    timestamp =
+      case String.split(timestamp, ":") do
+        [_minutes, _seconds] -> "00:" <> timestamp
+        _ -> timestamp
+      end
+
+    String.replace(timestamp, ".", ",")
+  end
 
   defp parse_subtitle_block(block) when is_binary(block) do
     lines = String.split(block, "\n") |> Enum.map(&String.trim/1)

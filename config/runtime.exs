@@ -20,6 +20,12 @@ if System.get_env("PHX_SERVER") do
   config :nathan_for_us, NathanForUsWeb.Endpoint, server: true
 end
 
+# API key for the JSON video ingest endpoint (/api/videos/upload).
+# When unset, ingest is disabled and the API responds with 503.
+if ingest_api_key = System.get_env("INGEST_API_KEY") do
+  config :nathan_for_us, :ingest_api_key, ingest_api_key
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
@@ -52,7 +58,10 @@ if config_env() == :prod do
   port = String.to_integer(System.get_env("PORT") || "4000")
 
   config :nathan_for_us, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
-  
+
+  # Ingest API key must come from the environment in prod (nil disables ingest)
+  config :nathan_for_us, :ingest_api_key, System.get_env("INGEST_API_KEY")
+
   # Configure Google Analytics if provided
   if ga_id = System.get_env("GOOGLE_ANALYTICS_ID") do
     config :nathan_for_us, :google_analytics_id, ga_id

@@ -4,8 +4,14 @@ defmodule NathanForUsWeb.Api.VideoUploadController do
   alias NathanForUs.Video
   alias NathanForUs.Repo
 
+  plug NathanForUsWeb.Plugs.ApiAuth
+
   @doc """
   Accepts a complete video dataset and uploads it to production.
+
+  Requires a valid "x-api-key" request header (see NathanForUsWeb.Plugs.ApiAuth).
+  The "captions" list is optional — videos can be ingested without captions.
+
   Expected payload format:
   {
     "video": {
@@ -28,7 +34,7 @@ defmodule NathanForUsWeb.Api.VideoUploadController do
         "compression_ratio": float
       }
     ],
-    "captions": [
+    "captions": [  // optional, may be omitted or empty
       {
         "start_time_ms": integer,
         "end_time_ms": integer,
@@ -68,11 +74,10 @@ defmodule NathanForUsWeb.Api.VideoUploadController do
     end
   end
 
-  defp upload_video_data(%{
-         "video" => video_params,
-         "frames" => frames_params,
-         "captions" => captions_params
-       }) do
+  defp upload_video_data(%{"video" => video_params, "frames" => frames_params} = params) do
+    # Captions are optional — a video with frames alone is a valid upload
+    captions_params = Map.get(params, "captions") || []
+
     # Try to create or find existing video by file_path in production
     video_attrs = prepare_video_attrs(video_params)
 

@@ -267,4 +267,153 @@ defmodule NathanForUs.SrtParserTest do
       assert hd(entries).end_time == 5_418_500
     end
   end
+
+  describe "WEBVTT support" do
+    test "parses WEBVTT content with header and dot timestamps" do
+      vtt_content = """
+      WEBVTT
+
+      1
+      00:00:01.000 --> 00:00:03.000
+      Hello world
+
+      2
+      00:00:04.500 --> 00:00:07.200
+      This is a test subtitle
+      with multiple lines
+      """
+
+      {:ok, entries} = SrtParser.parse_content(vtt_content)
+
+      assert length(entries) == 2
+
+      [first, second] = entries
+
+      assert first.index == 1
+      assert first.start_time == 1000
+      assert first.end_time == 3000
+      assert first.text == "Hello world"
+
+      assert second.index == 2
+      assert second.start_time == 4500
+      assert second.end_time == 7200
+      assert second.text == "This is a test subtitle with multiple lines"
+    end
+
+    test "handles header metadata lines and NOTE blocks" do
+      vtt_content = """
+      WEBVTT - Some title
+      Kind: captions
+      Language: en
+
+      NOTE
+      This comment block should be ignored
+
+      00:00:01.000 --> 00:00:03.000
+      Hello world
+      """
+
+      {:ok, entries} = SrtParser.parse_content(vtt_content)
+
+      assert length(entries) == 1
+      assert hd(entries).text == "Hello world"
+    end
+
+    test "handles cues without numeric indices and with text identifiers" do
+      vtt_content = """
+      WEBVTT
+
+      00:00:01.000 --> 00:00:03.000
+      First cue without identifier
+
+      intro-cue
+      00:00:04.000 --> 00:00:06.000
+      Second cue with text identifier
+      """
+
+      {:ok, entries} = SrtParser.parse_content(vtt_content)
+
+      assert length(entries) == 2
+
+      [first, second] = entries
+
+      assert first.index == 1
+      assert first.text == "First cue without identifier"
+
+      assert second.index == 2
+      assert second.start_time == 4000
+      assert second.end_time == 6000
+      assert second.text == "Second cue with text identifier"
+    end
+
+    test "strips cue settings after the timestamps" do
+      vtt_content = """
+      WEBVTT
+
+      00:00:01.000 --> 00:00:03.000 align:start position:0% line:85%
+      Positioned caption
+      """
+
+      {:ok, entries} = SrtParser.parse_content(vtt_content)
+
+      assert length(entries) == 1
+      assert hd(entries).start_time == 1000
+      assert hd(entries).end_time == 3000
+      assert hd(entries).text == "Positioned caption"
+    end
+
+    test "handles short-form MM:SS.mmm timestamps" do
+      vtt_content = """
+      WEBVTT
+
+      01:30.500 --> 01:32.250
+      Short timestamp cue
+      """
+
+      {:ok, entries} = SrtParser.parse_content(vtt_content)
+
+      assert length(entries) == 1
+      # 1 minute, 30.5 seconds = 90500 milliseconds
+      assert hd(entries).start_time == 90_500
+      # 1 minute, 32.25 seconds = 92250 milliseconds
+      assert hd(entries).end_time == 92_250
+    end
+
+    test "handles hour timestamps in VTT format" do
+      vtt_content = """
+      WEBVTT
+
+      01:30:15.250 --> 01:30:18.500
+      Long video subtitle
+      """
+
+      {:ok, entries} = SrtParser.parse_content(vtt_content)
+
+      assert length(entries) == 1
+      assert hd(entries).start_time == 5_415_250
+      assert hd(entries).end_time == 5_418_500
+    end
+
+    test "parse_file/1 works with .vtt paths" do
+      vtt_content = """
+      WEBVTT
+
+      00:00:01.000 --> 00:00:03.000
+      Hello from a file
+      """
+
+      temp_file = "test/tmp/test_#{System.unique_integer()}.vtt"
+      File.mkdir_p("test/tmp")
+      File.write!(temp_file, vtt_content)
+
+      result = SrtParser.parse_file(temp_file)
+
+      # Clean up
+      File.rm(temp_file)
+
+      assert {:ok, entries} = result
+      assert length(entries) == 1
+      assert hd(entries).text == "Hello from a file"
+    end
+  end
 end

@@ -79,8 +79,7 @@ defmodule NathanForUs.VideoProcessor do
   Returns {:ok, metadata} or {:error, reason}.
   """
   def get_video_info(video_path) do
-    cmd = [
-      "ffprobe",
+    args = [
       "-v",
       "quiet",
       "-print_format",
@@ -90,7 +89,7 @@ defmodule NathanForUs.VideoProcessor do
       video_path
     ]
 
-    case System.cmd("ffprobe", cmd, stderr_to_stdout: true) do
+    case System.cmd("ffprobe", args, stderr_to_stdout: true) do
       {output, 0} ->
         case Jason.decode(output) do
           {:ok, metadata} -> {:ok, metadata}
@@ -100,6 +99,12 @@ defmodule NathanForUs.VideoProcessor do
       {output, _exit_code} ->
         {:error, "ffprobe failed: #{output}"}
     end
+  rescue
+    e in ErlangError ->
+      case e do
+        %ErlangError{original: :enoent} -> {:error, "ffprobe not found in PATH"}
+        _ -> reraise e, __STACKTRACE__
+      end
   end
 
   @doc """
@@ -299,18 +304,21 @@ defmodule NathanForUs.VideoProcessor do
   end
 
   @doc """
-  Process a complete video with captions and store everything in the database.
+  Process a complete video and store everything in the database.
 
   This function:
-  1. Creates a video record
-  2. Extracts frames from the video
-  3. Parses caption file
-  4. Links frames with captions
+  1. Updates the video record with metadata
+  2. Parses the caption file (SRT or WEBVTT) when one is provided
+  3. Extracts frames from the video
+  4. Links frames with captions (when captions exist)
   5. Stores everything in the database
+
+  `caption_path` is optional — pass `nil` (or omit it) to process a video
+  without captions. Frames are still extracted and the video completes.
   """
-  def process_video_with_captions(video_id, video_path, caption_path) do
-    alias NathanForUs.{Video, SrtParser, Repo}
-    alias NathanForUs.Video.{VideoFrame, VideoCaption, FrameCaption}
+  def process_video_with_captions(video_id, video_path, caption_path \\ nil) do
+    alias NathanForUs.{Video, Repo}
+    alias NathanForUs.Video.{VideoFrame, FrameCaption}
 
     Logger.info("Starting video processing for video_id: #{video_id}")
 
@@ -342,27 +350,8 @@ defmodule NathanForUs.VideoProcessor do
 
       Logger.info("Updated video metadata: #{width}x#{height}, #{duration_ms}ms")
 
-      # Parse captions
-      Logger.info("Parsing captions from: #{caption_path}")
-      {:ok, captions} = SrtParser.parse_file(caption_path)
-
-      # Store captions in database
-      caption_records =
-        Enum.map(captions, fn caption ->
-          %{
-            video_id: video_id,
-            text: caption.text,
-            start_time_ms: caption.start_time_ms,
-            end_time_ms: caption.end_time_ms,
-            inserted_at:
-              DateTime.utc_now() |> DateTime.to_naive() |> NaiveDateTime.truncate(:second),
-            updated_at:
-              DateTime.utc_now() |> DateTime.to_naive() |> NaiveDateTime.truncate(:second)
-          }
-        end)
-
-      {_count, caption_records} = Repo.insert_all(VideoCaption, caption_records, returning: true)
-      Logger.info("Inserted #{length(caption_records)} captions")
+      # Parse and store captions when a caption file is provided
+      caption_records = maybe_insert_captions(video_id, caption_path)
 
       # Extract frames with binary data
       config =
@@ -453,6 +442,38 @@ defmodule NathanForUs.VideoProcessor do
         Logger.error("Video processing failed: #{inspect(error)}")
         {:error, "Processing failed: #{inspect(error)}"}
     end
+  end
+
+  defp maybe_insert_captions(_video_id, nil) do
+    Logger.info("No caption file provided, skipping caption import")
+    []
+  end
+
+  defp maybe_insert_captions(video_id, caption_path) do
+    alias NathanForUs.{SrtParser, Repo}
+    alias NathanForUs.Video.VideoCaption
+
+    Logger.info("Parsing captions from: #{caption_path}")
+    {:ok, captions} = SrtParser.parse_file(caption_path)
+
+    now = DateTime.utc_now() |> DateTime.to_naive() |> NaiveDateTime.truncate(:second)
+
+    caption_records =
+      Enum.map(captions, fn caption ->
+        %{
+          video_id: video_id,
+          text: caption.text,
+          start_time_ms: caption.start_time,
+          end_time_ms: caption.end_time,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    {_count, caption_records} = Repo.insert_all(VideoCaption, caption_records, returning: true)
+    Logger.info("Inserted #{length(caption_records)} captions")
+
+    caption_records
   end
 
   defp parse_frame_rate(frame_rate_str) when is_binary(frame_rate_str) do

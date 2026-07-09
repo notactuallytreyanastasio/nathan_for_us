@@ -102,3 +102,6 @@ config :swoosh, :api_client, false
 if ga_id = System.get_env("GOOGLE_ANALYTICS_ID") do
   config :nathan_for_us, :google_analytics_id, ga_id
 end
+
+# Ingest API key for local development (override with INGEST_API_KEY env var)
+config :nathan_for_us, :ingest_api_key, "dev-ingest-key"

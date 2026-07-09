@@ -56,10 +56,6 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
         socket = assign(socket, :error_message, "Video file is required")
         {:noreply, socket}
 
-      socket.assigns.uploads.captions.entries == [] ->
-        socket = assign(socket, :error_message, "Caption file is required")
-        {:noreply, socket}
-
       true ->
         # Start processing
         send(self(), {:start_processing, video_title, video_description})
@@ -162,7 +158,7 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
       send(self(), {:processing_update, "Saving uploaded files...", 10})
 
       video_file_path = save_upload_file(socket, :video)
-      caption_file_path = save_upload_file(socket, :captions)
+      caption_file_path = maybe_save_caption_file(socket)
 
       send(self(), {:processing_update, "Creating video record...", 20})
 
@@ -200,6 +196,13 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
     rescue
       error ->
         {:error, "Unexpected error: #{inspect(error)}"}
+    end
+  end
+
+  defp maybe_save_caption_file(socket) do
+    case socket.assigns.uploads.captions.entries do
+      [] -> nil
+      _entries -> save_upload_file(socket, :captions)
     end
   end
 
@@ -347,7 +350,7 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
               
     <!-- Caption Upload -->
               <div class="bg-gray-800 p-6 rounded-lg">
-                <h3 class="text-lg font-semibold mb-4">Caption File *</h3>
+                <h3 class="text-lg font-semibold mb-4">Caption File (optional)</h3>
 
                 <div
                   class="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center hover:border-gray-500 transition-colors"
@@ -372,7 +375,7 @@ defmodule NathanForUsWeb.AdminVideoUploadLive do
                     <span class="text-gray-400"> or drag and drop</span>
                   </label>
 
-                  <p class="text-xs text-gray-500 mt-2">SRT, VTT up to 10MB</p>
+                  <p class="text-xs text-gray-500 mt-2">SRT, VTT up to 10MB — optional</p>
 
                   <.live_file_input upload={@uploads.captions} class="sr-only" />
                 </div>
