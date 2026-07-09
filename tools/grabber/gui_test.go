@@ -91,8 +91,8 @@ func TestIsProgressLine(t *testing.T) {
 
 func TestGuiConfigRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)             // macOS: ~/Library/Application Support
-	t.Setenv("XDG_CONFIG_HOME", dir)  // linux: honored by os.UserConfigDir
+	t.Setenv("HOME", dir)            // macOS: ~/Library/Application Support
+	t.Setenv("XDG_CONFIG_HOME", dir) // linux: honored by os.UserConfigDir
 
 	want := guiConfig{Server: "https://s.example", APIKey: "sekret", FPS: 2, JPEGQuality: 90, MaxHeight: 720, Cookies: "firefox"}
 	saveGUIConfig(want)
@@ -102,8 +102,6 @@ func TestGuiConfigRoundTrip(t *testing.T) {
 		t.Errorf("round-trip mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }
-
-
 
 func TestLoadGUIConfigDefaultsWhenMissing(t *testing.T) {
 	dir := t.TempDir()

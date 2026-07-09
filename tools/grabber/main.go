@@ -101,37 +101,46 @@ func main() {
 	logLine("note: only grab content you own or have the rights to use.")
 	logLine("")
 
-	resultURL, err := runPipeline(opts)
+	res, err := runPipeline(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	if resultURL != "" {
-		logLine("\ndone! watch it at " + resultURL)
+	if res != nil && res.editorURL != "" {
+		logLine("\nDone. Edit it now: " + res.editorURL)
 	} else {
 		logLine("\ndone!")
 	}
 }
 
+// grabResult is what a successful upload yields: the server-assigned video id
+// and the absolute editor URL for it (e.g. "https://server/video/123"), built
+// from the relative "url" the ingest API returns.
+type grabResult struct {
+	videoID   any
+	editorURL string
+}
+
 // runPipeline runs the full grab — unpack tools, fetch metadata, download,
 // slice frames, parse captions, and (unless --local-only) upload. Progress is
 // emitted through logLine so the CLI and GUI share one implementation. Returns
-// the resulting watch URL when an upload happened, or "" for --local-only.
-func runPipeline(opts options) (string, error) {
+// the upload result (video id + editor URL) when an upload happened, or nil
+// for --local-only.
+func runPipeline(opts options) (*grabResult, error) {
 	ytdlp, ffmpeg, err := ensureTools()
 	if err != nil {
-		return "", fmt.Errorf("setting up bundled tools: %w", err)
+		return nil, fmt.Errorf("setting up bundled tools: %w", err)
 	}
 
 	workdir, cleanup, err := makeWorkdir(opts)
 	if err != nil {
-		return "", fmt.Errorf("creating work directory: %w", err)
+		return nil, fmt.Errorf("creating work directory: %w", err)
 	}
 	defer cleanup()
 
 	meta, err := fetchMetadata(ytdlp, opts)
 	if err != nil {
-		return "", fmt.Errorf("reading video metadata: %w", err)
+		return nil, fmt.Errorf("reading video metadata: %w", err)
 	}
 	title := opts.title
 	if title == "" {
@@ -141,13 +150,13 @@ func runPipeline(opts options) (string, error) {
 
 	videoPath, subsPath, err := download(ytdlp, ffmpeg, opts, workdir)
 	if err != nil {
-		return "", fmt.Errorf("downloading video: %w", err)
+		return nil, fmt.Errorf("downloading video: %w", err)
 	}
 
 	framesDir := filepath.Join(workdir, "frames")
 	frames, err := sliceFrames(ffmpeg, opts, videoPath, framesDir)
 	if err != nil {
-		return "", fmt.Errorf("extracting frames: %w", err)
+		return nil, fmt.Errorf("extracting frames: %w", err)
 	}
 	logLine(fmt.Sprintf("sliced %d frames at %.2g fps", len(frames), opts.fps))
 
@@ -162,7 +171,7 @@ func runPipeline(opts options) (string, error) {
 		logLine("")
 		logLine("--local-only: files kept in " + workdir)
 		logLine("upload the video (and captions) through the site's /add page.")
-		return "", nil
+		return nil, nil
 	}
 
 	return upload(opts, meta, title, frames, captions)
@@ -170,8 +179,12 @@ func runPipeline(opts options) (string, error) {
 
 func parseFlags() options {
 	var o options
-	flag.StringVar(&o.server, "server", "", "Framecut server base URL, e.g. https://example.com")
-	flag.StringVar(&o.apiKey, "api-key", "", "API key sent as the X-API-Key header")
+	// FRAMECUT_SERVER / FRAMECUT_API_KEY seed the flag defaults so scripted
+	// environments can set them once; an explicit flag always wins.
+	flag.StringVar(&o.server, "server", os.Getenv("FRAMECUT_SERVER"),
+		"Framecut server base URL, e.g. https://example.com (defaults to $FRAMECUT_SERVER)")
+	flag.StringVar(&o.apiKey, "api-key", os.Getenv("FRAMECUT_API_KEY"),
+		"API key sent as the X-API-Key header; get one from your server's /setup page (defaults to $FRAMECUT_API_KEY)")
 	flag.Float64Var(&o.fps, "fps", 1.0, "frames per second to extract")
 	flag.IntVar(&o.jpegQuality, "jpeg-quality", 85, "JPEG quality 0-100")
 	flag.IntVar(&o.maxHeight, "max-height", 480, "max frame height in pixels; smaller videos are kept as-is")
@@ -199,7 +212,8 @@ func parseFlags() options {
 
 	if !o.localOnly {
 		if o.server == "" || o.apiKey == "" {
-			fmt.Fprintln(os.Stderr, "error: --server and --api-key are required (or use --local-only)")
+			fmt.Fprintln(os.Stderr, "error: --server and --api-key are required "+
+				"(flags or the FRAMECUT_SERVER / FRAMECUT_API_KEY env vars; or use --local-only)")
 			os.Exit(2)
 		}
 		o.server = strings.TrimRight(o.server, "/")
@@ -497,7 +511,7 @@ func tsMs(h, m, s, ms string) int {
 
 // --- upload ------------------------------------------------------------------
 
-func upload(opts options, meta metadata, title string, frames []frame, captions []caption) (string, error) {
+func upload(opts options, meta metadata, title string, frames []frame, captions []caption) (*grabResult, error) {
 	endpoint := opts.server + "/api/videos/upload"
 
 	durationMs := meta.durationS * 1000
@@ -522,6 +536,7 @@ func upload(opts options, meta metadata, title string, frames []frame, captions 
 
 	batches := (len(frames) + opts.batchSize - 1) / opts.batchSize
 	var videoID any
+	var editorPath string
 
 	for i := 0; i < batches; i++ {
 		lo := i * opts.batchSize
@@ -540,18 +555,27 @@ func upload(opts options, meta metadata, title string, frames []frame, captions 
 
 		resp, err := postWithRetry(endpoint, opts.apiKey, payload)
 		if err != nil {
-			return "", fmt.Errorf("batch %d/%d: %w", i+1, batches, err)
+			return nil, fmt.Errorf("batch %d/%d: %w", i+1, batches, err)
 		}
+		// Every batch response carries the video id and its relative editor
+		// URL (e.g. "/video/123"); the latest one wins.
 		if id, ok := resp["video_id"]; ok {
 			videoID = id
+		}
+		if u, ok := resp["url"].(string); ok && u != "" {
+			editorPath = u
 		}
 		logLine(fmt.Sprintf("uploaded batch %d/%d (%d frames)", i+1, batches, hi-lo))
 	}
 
-	if videoID != nil {
-		return fmt.Sprintf("%s/video/%v", opts.server, videoID), nil
+	switch {
+	case editorPath != "":
+		return &grabResult{videoID: videoID, editorURL: opts.server + editorPath}, nil
+	case videoID != nil:
+		// Older servers predate the "url" field; build the link from the id.
+		return &grabResult{videoID: videoID, editorURL: fmt.Sprintf("%s/video/%v", opts.server, videoID)}, nil
 	}
-	return "", nil
+	return nil, nil
 }
 
 func postWithRetry(endpoint, apiKey string, payload any) (map[string]any, error) {

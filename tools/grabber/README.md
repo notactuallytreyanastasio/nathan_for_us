@@ -4,19 +4,44 @@ The companion app for Framecut. Paste a video link (YouTube or anything
 yt-dlp supports); it downloads the video, slices it into 1fps JPEG frames
 locally, and uploads frames + captions to a Framecut server's ingest API.
 
+## Quickstart
+
+1. **Download** the app for your OS (GitHub Releases, or the landing page in
+   `site/`).
+2. **Connect it to your server.** Your API key (`fc_…`) lives on your Framecut
+   server's **/setup** page. Either:
+   - double-click the app — a first-run wizard walks you through server URL +
+     API key (with a link straight to `/setup`), or
+   - set the env vars once:
+
+     ```sh
+     export FRAMECUT_SERVER=https://your-framecut.example
+     export FRAMECUT_API_KEY=fc_your_key
+     ```
+
+     The CLI uses them as the defaults for `--server` / `--api-key` (explicit
+     flags win), and the wizard prefills its fields from them.
+3. **Paste a video URL** and hit Grab.
+4. When it finishes, click **"Open in Framecut →"** to land in the editor and
+   slice your first GIF. (The CLI prints the same link:
+   `Done. Edit it now: https://your-framecut.example/video/123`.)
+
 It runs two ways from the **same binary**:
 
-- **Desktop app (default)** — double-click, or run with no arguments. A native
-  window (Fyne) with a form: video URL, server URL, API key, and advanced
-  options, plus a live progress log. The server + key are remembered between
-  runs.
+- **Desktop app (default)** — double-click, or run with no arguments. First
+  run gets the guided wizard; after that, a native window (Fyne) with a form:
+  video URL, server URL, API key, and advanced options, plus a live progress
+  log. The server + key are remembered between runs.
 - **CLI** — run it with a video URL argument for the original scripted behavior:
 
   ```sh
   ./framecut-grab "https://www.youtube.com/watch?v=..." \
       --server https://your-framecut.example \
-      --api-key YOUR_INGEST_API_KEY
+      --api-key fc_your_key
   ```
+
+  Any valid key works via `--api-key` — a per-user `fc_…` key from `/setup`,
+  or a server's legacy shared `INGEST_API_KEY`.
 
   Useful flags: `--cookies-from-browser chrome` (age-restricted videos),
   `--local-only` (skip upload, keep mp4+subs for the /add web flow),
