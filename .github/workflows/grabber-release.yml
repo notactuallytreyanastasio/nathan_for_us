@@ -1,0 +1,177 @@
+name: grabber-release
+
+# Builds the Framecut Grabber desktop app (Fyne GUI, with a CLI fallback when
+# run with a URL argument) for macOS, Windows, and Linux, and publishes them as
+# GitHub Release assets. yt-dlp + ffmpeg are fetched per target and embedded, so
+# the downloads need no separate install.
+#
+# The GUI needs CGO, so each OS builds natively on its own runner:
+#   - macOS:   universal (arm64 + x86_64) .app, zipped
+#   - Windows: GUI .exe (no console window)
+#   - Linux:   x86_64 binary
+#
+# Trigger:  git tag grabber-v1.0.0 && git push origin grabber-v1.0.0
+# or run it from the Actions tab (workflow_dispatch) supplying a tag.
+
+on:
+  push:
+    tags:
+      - 'grabber-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (e.g. grabber-v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: tools/grabber/go.sum
+      - name: Install fyne CLI
+        run: go install fyne.io/tools/cmd/fyne@latest
+      - name: Fetch vendored tools (both arches)
+        working-directory: tools/grabber
+        run: |
+          ./build.sh fetch darwin-arm64
+          ./build.sh fetch darwin-amd64
+      - name: Build universal binary
+        working-directory: tools/grabber
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=1 GOARCH=arm64 CC=clang \
+            go build -trimpath -ldflags="-s -w" -o dist/grab-arm64 .
+          CGO_ENABLED=1 GOARCH=amd64 CC="clang -arch x86_64" \
+            go build -trimpath -ldflags="-s -w" -o dist/grab-amd64 .
+          lipo -create dist/grab-arm64 dist/grab-amd64 -output dist/grab-universal
+          file dist/grab-universal
+      - name: Package .app
+        working-directory: tools/grabber
+        run: |
+          "$(go env GOPATH)/bin/fyne" package --target darwin --release \
+            --icon Icon.png --name "Framecut Grabber" \
+            --app-id online.bobbby.framecut.grabber --executable dist/grab-universal
+          ditto -c -k --sequesterRsrc --keepParent \
+            "Framecut Grabber.app" "Framecut-Grabber-macos.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: tools/grabber/Framecut-Grabber-macos.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: tools/grabber/go.sum
+      - name: Ensure a C compiler (CGO)
+        shell: bash
+        run: gcc --version || choco install mingw -y
+      - name: Install fyne CLI
+        run: go install fyne.io/tools/cmd/fyne@latest
+      - name: Fetch vendored tools
+        working-directory: tools/grabber
+        shell: bash
+        run: ./build.sh fetch windows-amd64
+      - name: Package .exe
+        working-directory: tools/grabber
+        shell: bash
+        run: |
+          CGO_ENABLED=1 "$(go env GOPATH)/bin/fyne" package --target windows --release \
+            --icon Icon.png --name "Framecut Grabber" \
+            --app-id online.bobbby.framecut.grabber
+          mv "Framecut Grabber.exe" "Framecut-Grabber-windows-amd64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: tools/grabber/Framecut-Grabber-windows-amd64.exe
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: tools/grabber/go.sum
+      - name: Install GL / X11 build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev
+      - name: Fetch vendored tools + build
+        working-directory: tools/grabber
+        run: |
+          ./build.sh fetch linux-amd64
+          CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" \
+            -o framecut-grabber-linux-amd64 .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: tools/grabber/framecut-grabber-linux-amd64
+
+  release:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect assets + checksums
+        run: |
+          mkdir out
+          mv artifacts/macos/Framecut-Grabber-macos.zip out/
+          mv artifacts/windows/Framecut-Grabber-windows-amd64.exe out/
+          mv artifacts/linux/framecut-grabber-linux-amd64 out/
+          cd out
+          chmod +x framecut-grabber-linux-amd64
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
+          cat SHA256SUMS.txt
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Framecut Grabber ${{ steps.tag.outputs.tag }}
+          fail_on_unmatched_files: true
+          files: |
+            out/Framecut-Grabber-macos.zip
+            out/Framecut-Grabber-windows-amd64.exe
+            out/framecut-grabber-linux-amd64
+            out/SHA256SUMS.txt
+          body: |
+            **Framecut Grabber** — a desktop app that turns any video into
+            GIF-ready frames on your Framecut server. Paste a link, pick a range
+            later, render a GIF. No install: yt-dlp + ffmpeg are bundled in.
+
+            ### Downloads
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | macOS (Apple Silicon + Intel) | `Framecut-Grabber-macos.zip` | Universal `.app`. First open: right-click → Open. |
+            | Windows (x86-64) | `Framecut-Grabber-windows-amd64.exe` | Double-click. SmartScreen → More info → Run anyway. |
+            | Linux (x86-64) | `framecut-grabber-linux-amd64` | `chmod +x` then run. Needs a desktop with OpenGL. |
+
+            Power users: run any of these with a URL argument for the original
+            command-line behavior. Verify with `SHA256SUMS.txt`.
+            Setup guide: https://downloader.bobbby.online
+
+            ### Licensing
+            These binaries embed yt-dlp (Unlicense) and FFmpeg (GPL builds from
+            [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static)); FFmpeg's
+            GPL terms apply to redistribution.
