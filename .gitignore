@@ -44,4 +44,7 @@ priv/static/frames
 
 # framecut-grab: vendored tools and built binaries are fetched/built, not committed
 /tools/grabber/vendor_bin/
+/tools/grabber/dist/
+/tools/grabber/*.app/
+/tools/grabber/Framecut-Grabber-*
 /priv/static/downloads/framecut-grab-*

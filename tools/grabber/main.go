@@ -58,51 +58,114 @@ type frame struct {
 	CompressionRatio float64 `json:"compression_ratio"`
 }
 
+// Progress plumbing shared by the CLI and GUI. logLine receives our own
+// human-readable status lines; procOut receives the raw stdout/stderr of the
+// child yt-dlp / ffmpeg processes. The CLI writes both straight to the
+// terminal; the GUI swaps in writers that append to the on-screen log.
+var (
+	logLine           = func(s string) { fmt.Println(s) }
+	procOut io.Writer = os.Stdout
+)
+
+// lineWriter forwards child-process output to logLine one whole line at a time,
+// so GUI log updates land as discrete lines rather than partial byte chunks.
+type lineWriter struct{ buf []byte }
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(string(w.buf[:i]), "\r")
+		if line != "" {
+			logLine(line)
+		}
+		w.buf = append(w.buf[:0], w.buf[i+1:]...)
+	}
+	return len(p), nil
+}
+
 func main() {
+	// No arguments (a Finder/Explorer double-click) or the explicit "gui"
+	// verb opens the desktop app; a URL argument runs the classic CLI.
+	if len(os.Args) <= 1 || os.Args[1] == "gui" {
+		runGUI()
+		return
+	}
+
 	opts := parseFlags()
 
-	fmt.Println("framecut-grab — slice any video into GIF-ready frames")
-	fmt.Println("note: only grab content you own or have the rights to use.")
-	fmt.Println()
+	logLine("framecut-grab — slice any video into GIF-ready frames")
+	logLine("note: only grab content you own or have the rights to use.")
+	logLine("")
 
+	resultURL, err := runPipeline(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if resultURL != "" {
+		logLine("\ndone! watch it at " + resultURL)
+	} else {
+		logLine("\ndone!")
+	}
+}
+
+// runPipeline runs the full grab — unpack tools, fetch metadata, download,
+// slice frames, parse captions, and (unless --local-only) upload. Progress is
+// emitted through logLine so the CLI and GUI share one implementation. Returns
+// the resulting watch URL when an upload happened, or "" for --local-only.
+func runPipeline(opts options) (string, error) {
 	ytdlp, ffmpeg, err := ensureTools()
-	fatalIf(err, "setting up bundled tools")
+	if err != nil {
+		return "", fmt.Errorf("setting up bundled tools: %w", err)
+	}
 
 	workdir, cleanup, err := makeWorkdir(opts)
-	fatalIf(err, "creating work directory")
+	if err != nil {
+		return "", fmt.Errorf("creating work directory: %w", err)
+	}
 	defer cleanup()
 
 	meta, err := fetchMetadata(ytdlp, opts)
-	fatalIf(err, "reading video metadata")
+	if err != nil {
+		return "", fmt.Errorf("reading video metadata: %w", err)
+	}
 	title := opts.title
 	if title == "" {
 		title = meta.title
 	}
-	fmt.Printf("video: %s (%s, %ds)\n", title, meta.id, meta.durationS)
+	logLine(fmt.Sprintf("video: %s (%s, %ds)", title, meta.id, meta.durationS))
 
 	videoPath, subsPath, err := download(ytdlp, ffmpeg, opts, workdir)
-	fatalIf(err, "downloading video")
+	if err != nil {
+		return "", fmt.Errorf("downloading video: %w", err)
+	}
 
 	framesDir := filepath.Join(workdir, "frames")
 	frames, err := sliceFrames(ffmpeg, opts, videoPath, framesDir)
-	fatalIf(err, "extracting frames")
-	fmt.Printf("sliced %d frames at %.2g fps\n", len(frames), opts.fps)
+	if err != nil {
+		return "", fmt.Errorf("extracting frames: %w", err)
+	}
+	logLine(fmt.Sprintf("sliced %d frames at %.2g fps", len(frames), opts.fps))
 
 	captions := parseSubtitles(subsPath)
 	if len(captions) > 0 {
-		fmt.Printf("parsed %d captions\n", len(captions))
+		logLine(fmt.Sprintf("parsed %d captions", len(captions)))
 	} else {
-		fmt.Println("no captions found (video will not be text-searchable)")
+		logLine("no captions found (video will not be text-searchable)")
 	}
 
 	if opts.localOnly {
-		fmt.Printf("\n--local-only: files kept in %s\n", workdir)
-		fmt.Println("upload the video (and captions) through the site's /add page.")
-		return
+		logLine("")
+		logLine("--local-only: files kept in " + workdir)
+		logLine("upload the video (and captions) through the site's /add page.")
+		return "", nil
 	}
 
-	err = upload(opts, meta, title, frames, captions)
-	fatalIf(err, "uploading to server")
+	return upload(opts, meta, title, frames, captions)
 }
 
 func parseFlags() options {
@@ -169,7 +232,7 @@ func ensureTools() (ytdlp, ffmpeg string, err error) {
 		return ytdlp, ffmpeg, nil
 	}
 
-	fmt.Printf("first run: unpacking bundled yt-dlp + ffmpeg to %s\n", dir)
+	logLine("first run: unpacking bundled yt-dlp + ffmpeg to " + dir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", "", err
 	}
@@ -234,7 +297,7 @@ func fetchMetadata(ytdlp string, opts options) (metadata, error) {
 }
 
 func download(ytdlp, ffmpeg string, opts options, workdir string) (videoPath, subsPath string, err error) {
-	fmt.Println("downloading video + subtitles...")
+	logLine("downloading video + subtitles...")
 
 	args := []string{
 		"--no-playlist",
@@ -275,7 +338,7 @@ func sliceFrames(ffmpeg string, opts options, videoPath, framesDir string) ([]fr
 		return nil, err
 	}
 
-	fmt.Println("slicing frames...")
+	logLine("slicing frames...")
 	vf := fmt.Sprintf("fps=%g,scale=-2:'min(%d,ih)'", opts.fps, opts.maxHeight)
 	err := runStreaming(ffmpeg,
 		"-hide_banner", "-loglevel", "error",
@@ -434,7 +497,7 @@ func tsMs(h, m, s, ms string) int {
 
 // --- upload ------------------------------------------------------------------
 
-func upload(opts options, meta metadata, title string, frames []frame, captions []caption) error {
+func upload(opts options, meta metadata, title string, frames []frame, captions []caption) (string, error) {
 	endpoint := opts.server + "/api/videos/upload"
 
 	durationMs := meta.durationS * 1000
@@ -477,20 +540,18 @@ func upload(opts options, meta metadata, title string, frames []frame, captions 
 
 		resp, err := postWithRetry(endpoint, opts.apiKey, payload)
 		if err != nil {
-			return fmt.Errorf("batch %d/%d: %w", i+1, batches, err)
+			return "", fmt.Errorf("batch %d/%d: %w", i+1, batches, err)
 		}
 		if id, ok := resp["video_id"]; ok {
 			videoID = id
 		}
-		fmt.Printf("uploaded batch %d/%d (%d frames)\n", i+1, batches, hi-lo)
+		logLine(fmt.Sprintf("uploaded batch %d/%d (%d frames)", i+1, batches, hi-lo))
 	}
 
 	if videoID != nil {
-		fmt.Printf("\ndone! watch it at %s/video/%v\n", opts.server, videoID)
-	} else {
-		fmt.Println("\ndone!")
+		return fmt.Sprintf("%s/video/%v", opts.server, videoID), nil
 	}
-	return nil
+	return "", nil
 }
 
 func postWithRetry(endpoint, apiKey string, payload any) (map[string]any, error) {
@@ -534,7 +595,7 @@ func postWithRetry(endpoint, apiKey string, payload any) (map[string]any, error)
 
 		if attempt < 3 {
 			wait := time.Duration(attempt*attempt) * 2 * time.Second
-			fmt.Printf("  retrying in %s (%v)\n", wait, lastErr)
+			logLine(fmt.Sprintf("  retrying in %s (%v)", wait, lastErr))
 			time.Sleep(wait)
 		}
 	}
@@ -588,8 +649,8 @@ func runCapture(bin string, args ...string) (string, error) {
 
 func runStreaming(bin string, args ...string) error {
 	cmd := exec.Command(bin, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = procOut
+	cmd.Stderr = procOut
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s failed: %v", filepath.Base(bin), err)
 	}
@@ -607,13 +668,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
-}
-
-func fatalIf(err error, doing string) {
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error %s: %v\n", doing, err)
-		os.Exit(1)
-	}
 }
 
 func min(a, b int) int {

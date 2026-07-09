@@ -1,0 +1,8 @@
+Website = "https://downloader.bobbby.online"
+
+[Details]
+Icon = "Icon.png"
+Name = "Framecut Grabber"
+ID = "online.bobbby.framecut.grabber"
+Version = "1.0.0"
+Build = 2

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #
-# Build framecut-grab binaries with yt-dlp + ffmpeg vendored inside.
+# Build the framecut-grab desktop app (Fyne GUI + CLI fallback) with yt-dlp +
+# ffmpeg vendored inside. The GUI needs CGO, so builds are NATIVE per-OS — the
+# release CI runs the packaging on separate macOS / Windows / Linux runners.
+# Locally, `./build.sh` just builds a runnable binary for your own machine.
 #
-#   ./build.sh                 build for the host platform only
-#   ./build.sh all             build every supported platform
-#   ./build.sh linux-amd64     build one specific platform
+#   ./build.sh                 fetch host tools + build a host binary
+#   ./build.sh fetch <plat>    only download vendored yt-dlp + ffmpeg for <plat>
 #
-# Outputs land in ../../priv/static/downloads/ as framecut-grab-<platform>.
-# Vendored tool downloads are cached in vendor_bin/<platform>/.
+# <plat> is one of: darwin-arm64 darwin-amd64 linux-amd64 windows-amd64.
+# Vendored tool downloads are cached in vendor_bin/<plat>/ (gitignored).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -31,6 +33,7 @@ host_platform() {
   case "$(uname -s)" in
     Darwin) os=darwin ;;
     Linux) os=linux ;;
+    MINGW*|MSYS*|CYGWIN*) os=windows ;;
     *) echo "unsupported host: $(uname -s)" >&2; exit 1 ;;
   esac
   case "$(uname -m)" in
@@ -49,29 +52,35 @@ fetch() { # url dest
   fi
 }
 
-build_one() {
-  local platform=$1
+# Download the vendored yt-dlp + ffmpeg for a platform into vendor_bin/<plat>/
+# so the platform's //go:embed directives can bake them into the binary.
+fetch_tools() {
+  local platform=$1 goos goarch ytdlp_asset ffmpeg_asset suffix
   read -r goos goarch ytdlp_asset ffmpeg_asset suffix <<<"$(spec "$platform")"
   suffix=${suffix//\'/}
-
-  echo "== $platform"
-  mkdir -p "vendor_bin/$platform" "$OUT_DIR"
+  echo "== fetch $platform"
+  mkdir -p "vendor_bin/$platform"
   fetch "$YTDLP_BASE/$ytdlp_asset" "vendor_bin/$platform/yt-dlp$suffix"
   fetch "$FFMPEG_BASE/$ffmpeg_asset" "vendor_bin/$platform/ffmpeg$suffix"
-
-  GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 \
-    go build -trimpath -ldflags="-s -w" \
-    -o "$OUT_DIR/framecut-grab-$platform$suffix" .
-
-  du -sh "$OUT_DIR/framecut-grab-$platform$suffix"
 }
 
 case "${1:-host}" in
-  host) build_one "$(host_platform)" ;;
-  all)
-    for p in darwin-arm64 darwin-amd64 linux-amd64 windows-amd64; do
-      build_one "$p"
-    done
+  fetch)
+    fetch_tools "${2:?usage: build.sh fetch <platform>}"
     ;;
-  *) build_one "$1" ;;
+  host)
+    plat="$(host_platform)"
+    read -r goos goarch _ _ suffix <<<"$(spec "$plat")"
+    suffix=${suffix//\'/}
+    fetch_tools "$plat"
+    mkdir -p "$OUT_DIR"
+    echo "== build $plat (CGO, native)"
+    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" \
+      -o "$OUT_DIR/framecut-grab-$plat$suffix" .
+    du -sh "$OUT_DIR/framecut-grab-$plat$suffix"
+    ;;
+  *)
+    echo "usage: build.sh [host|fetch <platform>]" >&2
+    exit 1
+    ;;
 esac
