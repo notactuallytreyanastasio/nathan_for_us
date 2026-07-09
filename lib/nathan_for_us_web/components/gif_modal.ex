@@ -14,7 +14,7 @@ defmodule NathanForUsWeb.Components.GifModal do
           <!-- Header with close button -->
           <div class="flex items-center justify-between mb-4">
             <h2 class="text-xl font-bold font-mono text-white">
-              <%= @gif_data.title || "Nathan GIF" %>
+              <%= @gif_data.title || "GIF" %>
             </h2>
             <button
               phx-click="close_gif_modal"
@@ -33,13 +33,13 @@ defmodule NathanForUsWeb.Components.GifModal do
               <%= if @gif_data.gif && @gif_data.gif.gif_data do %>
                 <img
                   src={"data:image/gif;base64,#{NathanForUs.Gif.to_base64(@gif_data.gif)}"}
-                  alt={@gif_data.title || "Nathan GIF"}
+                  alt={@gif_data.title || "GIF"}
                   class="max-w-full max-h-[60vh] object-contain"
                 />
               <% else %>
                 <div class="w-96 h-56 flex items-center justify-center text-gray-400 font-mono">
                   <div class="text-center">
-                    <div>Nathan GIF</div>
+                    <div>GIF</div>
                     <div class="text-xs mt-1">No data available</div>
                   </div>
                 </div>
@@ -51,7 +51,7 @@ defmodule NathanForUsWeb.Components.GifModal do
           <div class="bg-gray-700 rounded-lg p-4 mb-6">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm font-mono">
               <div>
-                <span class="text-gray-400">Episode:</span>
+                <span class="text-gray-400">Source:</span>
                 <span class="text-white ml-2"><%= @gif_data.video.title %></span>
               </div>
               <%= if @gif_data.category do %>
@@ -111,7 +111,7 @@ defmodule NathanForUsWeb.Components.GifModal do
                 phx-value-gif_id={@gif_data.id}
                 class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-mono transition-colors"
               >
-                📤 Repost to Timeline
+                🔗 Share
               </button>
             <% end %>
           </div>

@@ -28,6 +28,7 @@ import TimelineScrubber from './hooks/timeline_scrubber.js'
 import FrameMultiSelect from './hooks/frame_multi_select.js'
 import FrameSelection from './hooks/frame_selection.js'
 import { SlidingBackground } from './hooks/sliding_background.js'
+import VideoFrameSlicer from './hooks/video_frame_slicer.js'
 
 // Import analytics for custom event tracking
 import './analytics.js'
@@ -50,63 +51,8 @@ Hooks.FrameSelection = FrameSelection
 // Sliding background hook
 Hooks.SlidingBackground = SlidingBackground
 
-// Welcome Dialog Hook for first-time visitors
-Hooks.WelcomeDialog = {
-  mounted() {
-    // Check if this is the first visit to the chat room
-    const hasVisited = localStorage.getItem('nathan-chat-visited')
-    
-    if (hasVisited) {
-      // User has visited before, close the dialog immediately
-      this.pushEvent('close_welcome_dialog', {})
-    } else {
-      // First-time visitor, allow clicking backdrop to close
-      this.el.addEventListener('click', (e) => {
-        // Only close if clicking the backdrop (not the dialog content)
-        if (e.target === this.el) {
-          localStorage.setItem('nathan-chat-visited', 'true')
-          this.pushEvent('close_welcome_dialog', {})
-        }
-      })
-    }
-  }
-}
-
-// Welcome Dialog Button Hook to mark user as visited
-Hooks.WelcomeDialogButton = {
-  mounted() {
-    this.el.addEventListener('click', () => {
-      localStorage.setItem('nathan-chat-visited', 'true')
-    })
-  }
-}
-
-// Message Form Hook to handle clearing the textarea after sending
-Hooks.MessageForm = {
-  mounted() {
-    this.textarea = this.el.querySelector('#message-textarea')
-    
-    // Listen for the clear event from the server
-    this.handleEvent("clear_message_form", () => {
-      if (this.textarea) {
-        this.textarea.value = ''
-        this.textarea.focus()
-      }
-    })
-  },
-  
-  updated() {
-    // Ensure textarea is cleared when form is reset
-    if (this.textarea) {
-      const formData = new FormData(this.el)
-      const content = formData.get('chat_message[content]') || ''
-      if (content.trim() === '') {
-        this.textarea.value = ''
-      }
-    }
-  }
-}
-
+// Client-side video frame slicer hook (used by /add)
+Hooks.VideoFrameSlicer = VideoFrameSlicer
 
 Hooks.FrameAnimator = {
   mounted() {
@@ -275,28 +221,6 @@ Hooks.FrameAnimator = {
         }
       }
     }
-  }
-}
-
-// Video Search Welcome Hook for first-time visitors
-Hooks.VideoSearchWelcome = {
-  mounted() {
-    // Check if this is the first visit to video search
-    const hasVisited = localStorage.getItem('video-search-visited')
-    
-    if (!hasVisited) {
-      // First-time visitor, show the modal
-      this.pushEvent('show_welcome_for_first_visit', {})
-    }
-  }
-}
-
-// Mark video search as visited
-Hooks.VideoSearchVisited = {
-  mounted() {
-    this.el.addEventListener('click', () => {
-      localStorage.setItem('video-search-visited', 'true')
-    })
   }
 }
 
@@ -512,6 +436,14 @@ let liveSocket = new LiveSocket("/live", Socket, {
 topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
+
+// Copy text to the clipboard when the server pushes a copy_to_clipboard event
+// (server side: push_event(socket, "copy_to_clipboard", %{text: ...}))
+document.addEventListener("phx:copy_to_clipboard", e => {
+  if (e.detail && e.detail.text) {
+    navigator.clipboard.writeText(e.detail.text)
+  }
+})
 
 // connect if there are any LiveViews on the page
 liveSocket.connect()

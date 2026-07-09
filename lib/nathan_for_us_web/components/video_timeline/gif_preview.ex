@@ -125,7 +125,7 @@ defmodule NathanForUsWeb.Components.VideoTimeline.GifPreview do
                 </div>
               </div>
               <div class="text-xs text-gray-500 mt-2 font-mono text-center">
-                Captions dont sync with frame animation above - they just cycle through
+                Captions don't sync with the frame animation above - they just cycle through
               </div>
             </div>
           </div>
@@ -137,7 +137,7 @@ defmodule NathanForUsWeb.Components.VideoTimeline.GifPreview do
             <div class="flex justify-center gap-4 flex-wrap">
               <a
                 href={"data:image/gif;base64,#{@generated_gif_data}"}
-                download="nathan-gif.gif"
+                download="framecut.gif"
                 class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-mono text-sm transition-colors"
               >
                 Download GIF
@@ -148,7 +148,7 @@ defmodule NathanForUsWeb.Components.VideoTimeline.GifPreview do
                   phx-click="post_to_timeline"
                   class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded font-mono text-sm transition-colors"
                 >
-                  Post to Timeline
+                  Post to public timeline
                 </button>
               <% else %>
                 <.link

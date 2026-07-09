@@ -4,50 +4,56 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <.live_title default="Nathan For Us">
+    <.live_title default="Framecut" suffix=" · Framecut">
       {assigns[:page_title]}
     </.live_title>
-    
+
 <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website" />
     <meta property="og:url" content={"https://#{@conn.host}/"} />
-    <meta property="og:title" content={assigns[:page_title] || "Nathan For Us"} />
+    <meta property="og:title" content={assigns[:page_title] || "Framecut"} />
     <meta
       property="og:description"
-      content={assigns[:page_description] || "Join a group of like minded people"}
+      content={
+        assigns[:page_description] || "Framecut — turn any video into GIFs, frame by frame."
+      }
     />
-    <meta property="og:image" content={"https://#{@conn.host}/images/fellow-pilot.png"} />
+    <meta property="og:image" content={"https://#{@conn.host}/images/logo.png"} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Nathan For Us - Join a group of like minded people" />
-    <meta property="og:site_name" content="Nathan For Us" />
-    
+    <meta property="og:image:alt" content="Framecut — turn any video into GIFs, frame by frame." />
+    <meta property="og:site_name" content="Framecut" />
+
 <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image" />
     <meta property="twitter:url" content={"https://#{@conn.host}/"} />
-    <meta property="twitter:title" content={assigns[:page_title] || "Nathan For Us"} />
+    <meta property="twitter:title" content={assigns[:page_title] || "Framecut"} />
     <meta
       property="twitter:description"
-      content={assigns[:page_description] || "Join a group of like minded people"}
+      content={
+        assigns[:page_description] || "Framecut — turn any video into GIFs, frame by frame."
+      }
     />
-    <meta property="twitter:image" content={"https://#{@conn.host}/images/fellow-pilot.png"} />
-    
+    <meta property="twitter:image" content={"https://#{@conn.host}/images/logo.png"} />
+
 <!-- Apple / iMessage -->
-    <meta name="apple-mobile-web-app-title" content="Nathan For Us" />
+    <meta name="apple-mobile-web-app-title" content="Framecut" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <link rel="apple-touch-icon" href={~p"/images/fellow-pilot.png"} />
-    
+    <link rel="apple-touch-icon" href={~p"/images/logo.png"} />
+
 <!-- General -->
     <meta
       name="description"
-      content={assigns[:page_description] || "Join a group of like minded people"}
+      content={
+        assigns[:page_description] || "Framecut — turn any video into GIFs, frame by frame."
+      }
     />
 
     <link phx-track-static rel="stylesheet" href={~p"/assets/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/app.js"}>
     </script>
-    
+
     <!-- Google Analytics -->
     <%= if google_analytics_id = Application.get_env(:nathan_for_us, :google_analytics_id) do %>
       <script async src={"https://www.googletagmanager.com/gtag/js?id=#{google_analytics_id}"}></script>
@@ -56,13 +62,51 @@
         function gtag(){dataLayer.push(arguments);}
         gtag('js', new Date());
         gtag('config', '<%= google_analytics_id %>');
-        
+
         // Store GA ID for client-side access
         window.GA_MEASUREMENT_ID = '<%= google_analytics_id %>';
       </script>
     <% end %>
   </head>
-  <body class="bg-white">
+  <body class="bg-gray-900">
+    <nav class="bg-gray-900 border-b border-gray-700 font-mono text-sm">
+      <div class="max-w-7xl mx-auto px-4 h-12 flex items-center justify-between gap-4 overflow-x-auto whitespace-nowrap">
+        <div class="flex items-center gap-5">
+          <a href="/" class="text-white font-bold tracking-wider hover:text-blue-400 transition-colors">
+            FRAMECUT ▶
+          </a>
+          <a href="/" class="text-gray-400 hover:text-white transition-colors">Library</a>
+          <a href="/timeline" class="text-gray-400 hover:text-white transition-colors">Timeline</a>
+          <a href="/gifs" class="text-gray-400 hover:text-white transition-colors">GIFs</a>
+          <a href="/add" class="text-gray-400 hover:text-white transition-colors">+ Add video</a>
+        </div>
+        <div class="flex items-center gap-4">
+          <%= if assigns[:current_user] do %>
+            <span class="text-gray-500 hidden sm:inline">{@current_user.email}</span>
+            <a href="/users/settings" class="text-gray-400 hover:text-white transition-colors">
+              Settings
+            </a>
+            <form action="/users/log_out" method="post" class="inline">
+              <input type="hidden" name="_method" value="delete" />
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button
+                type="submit"
+                class="text-gray-400 hover:text-white transition-colors bg-transparent border-0 p-0 font-mono text-sm cursor-pointer"
+              >
+                Log out
+              </button>
+            </form>
+          <% else %>
+            <a href="/users/log_in" class="text-gray-400 hover:text-white transition-colors">
+              Log in
+            </a>
+            <a href="/users/register" class="text-gray-400 hover:text-white transition-colors">
+              Register
+            </a>
+          <% end %>
+        </div>
+      </div>
+    </nav>
     {@inner_content}
   </body>
 </html>
