@@ -13,65 +13,56 @@ defmodule NathanForUsWeb.HomeLive do
   alias NathanForUs.Video.Video, as: VideoModel
 
   def mount(_params, _session, socket) do
-    # Get random caption suggestions for initial display
-    random_quotes = Video.get_sample_caption_suggestions(18)
+    # The suggestions query uses ORDER BY RANDOM(); only run it once the
+    # socket is connected so it doesn't execute twice per visit.
+    random_quotes =
+      if connected?(socket), do: Video.get_sample_caption_suggestions(18), else: []
 
-    # Get all videos for the library grid
-    all_videos = Video.list_videos() |> Enum.sort_by(& &1.title)
+    all_videos =
+      Video.list_videos()
+      |> Enum.sort_by(& &1.inserted_at, {:desc, NaiveDateTime})
+
+    thumbnails = Video.get_video_thumbnails(Enum.map(all_videos, & &1.id))
 
     socket =
       socket
-      |> assign(:page_title, "Framecut")
+      |> assign(:page_title, "Turn any video into GIFs")
       |> assign(:search_term, "")
       |> assign(:search_form, to_form(%{}))
       |> assign(:random_quotes, random_quotes)
       |> assign(:all_videos, all_videos)
+      |> assign(:thumbnails, thumbnails)
       |> assign(:search_results, [])
       |> assign(:loading, false)
       |> assign(:has_searched, false)
+      |> assign(:search_hint, nil)
 
     {:ok, socket}
   end
 
-  def handle_event("search", %{"search" => %{"term" => term}}, socket) do
-    term = String.trim(term)
+  def handle_event("search", %{"search" => %{"term" => raw_term}} = params, socket) do
+    term = String.trim(raw_term)
+    typed? = Map.has_key?(params, "_target")
 
-    if String.length(term) >= 3 do
-      socket = assign(socket, :loading, true)
+    cond do
+      String.length(term) >= 3 and (not typed? or term != socket.assigns.search_term) ->
+        start_search(socket, term)
 
-      # Search for frames across all videos
-      search_results = Video.search_frames_by_text_simple(term)
+      String.length(term) >= 3 ->
+        # phx-change fired with the term we already searched — nothing to do
+        {:noreply, socket}
 
-      # Group results by video and add video information
-      grouped_results = group_results_by_video(search_results)
+      typed? ->
+        # Still typing a short term: keep the input in sync, no hint yet
+        {:noreply, socket |> assign(:search_term, raw_term) |> assign(:search_hint, nil)}
 
-      socket =
-        socket
-        |> assign(:search_term, term)
-        |> assign(:search_results, grouped_results)
-        |> assign(:loading, false)
-        |> assign(:has_searched, true)
-
-      {:noreply, socket}
-    else
-      socket =
-        socket
-        |> assign(:search_results, [])
-        |> assign(:has_searched, false)
-        |> assign(:loading, false)
-
-      {:noreply, socket}
+      true ->
+        {:noreply, assign(socket, :search_hint, "Type at least 3 characters")}
     end
   end
 
   def handle_event("select_quote", %{"quote" => quote}, socket) do
-    # Fill the search input with the selected suggestion and trigger search
-    socket = assign(socket, :search_term, quote)
-
-    # Trigger the search automatically
-    send(self(), {:auto_search, quote})
-
-    {:noreply, socket}
+    start_search(socket, quote)
   end
 
   def handle_event("clear_search", _params, socket) do
@@ -81,6 +72,7 @@ defmodule NathanForUsWeb.HomeLive do
       |> assign(:search_results, [])
       |> assign(:has_searched, false)
       |> assign(:loading, false)
+      |> assign(:search_hint, nil)
 
     {:noreply, socket}
   end
@@ -96,8 +88,7 @@ defmodule NathanForUsWeb.HomeLive do
         path =
           ~p"/video/#{video_id}?random=true&start_frame=#{start_frame}&selected_indices=#{indices_param}"
 
-        socket = redirect(socket, to: path)
-        {:noreply, socket}
+        {:noreply, push_navigate(socket, to: path)}
 
       {:error, _reason} ->
         socket = put_flash(socket, :error, "No suitable videos found for random GIF generation")
@@ -105,290 +96,303 @@ defmodule NathanForUsWeb.HomeLive do
     end
   end
 
-  def handle_info({:auto_search, term}, socket) do
-    if String.length(term) >= 3 do
-      socket = assign(socket, :loading, true)
-
-      search_results = Video.search_frames_by_text_simple(term)
-      grouped_results = group_results_by_video(search_results)
+  def handle_info({:run_search, term}, socket) do
+    if term == socket.assigns.search_term do
+      grouped_results =
+        term
+        |> Video.search_frames_by_text_simple()
+        |> group_results_by_video()
 
       socket =
         socket
         |> assign(:search_results, grouped_results)
         |> assign(:loading, false)
-        |> assign(:has_searched, true)
 
       {:noreply, socket}
     else
+      # A newer search superseded this one; skip the stale results
       {:noreply, socket}
     end
   end
 
+  defp start_search(socket, term) do
+    send(self(), {:run_search, term})
+
+    socket =
+      socket
+      |> assign(:search_term, term)
+      |> assign(:loading, true)
+      |> assign(:has_searched, true)
+      |> assign(:search_hint, nil)
+
+    {:noreply, socket}
+  end
+
   def render(assigns) do
     ~H"""
-    <div class="min-h-screen bg-gray-900 text-white">
+    <div class="min-h-screen">
       <!-- Hero -->
-      <div class="bg-gray-800 border-b border-gray-700 px-6 py-12">
+      <div class="bg-white border-b border-stone-200 px-6 py-12">
         <div class="max-w-4xl mx-auto text-center">
-          <h1 class="text-5xl font-bold font-mono tracking-tight text-white">FRAMECUT</h1>
-          <p class="text-gray-400 font-mono mt-3">
+          <h1 class="text-4xl sm:text-5xl font-bold font-mono tracking-tight text-stone-900">
+            FRAMECUT <span class="text-brand">&#9654;</span>
+          </h1>
+          <p class="text-stone-500 font-mono mt-3">
             Turn any video into GIFs, frame by frame.
           </p>
 
-          <div class="flex flex-wrap items-center justify-center gap-4 mt-8">
-            <.link
-              navigate={~p"/add"}
-              class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-mono font-medium transition-colors"
-            >
-              + Add a video
-            </.link>
-            <.link
-              navigate={~p"/gifs"}
-              class="bg-gray-700 hover:bg-gray-600 border border-gray-600 text-white px-6 py-3 rounded-lg font-mono font-medium transition-colors"
-            >
-              Browse the GIF feed
-            </.link>
-            <.link
-              navigate={~p"/timeline"}
-              class="bg-gray-700 hover:bg-gray-600 border border-gray-600 text-white px-6 py-3 rounded-lg font-mono font-medium transition-colors"
-            >
-              Public timeline
-            </.link>
-            <button
-              phx-click="random_gif"
-              class="bg-gray-700 hover:bg-gray-600 border border-gray-600 text-white px-6 py-3 rounded-lg font-mono font-medium transition-colors"
-              title="Jump into the editor with a random clip"
-            >
-              🎲 Random GIF
-            </button>
-          </div>
+          <%= if Enum.empty?(@all_videos) do %>
+            <div class="mt-10">
+              <.link navigate={~p"/add"} class="btn-primary px-6 py-3 text-base">
+                + Add your first video
+              </.link>
+              <p class="mt-4 text-sm text-stone-500">
+                Or ingest from the command line with
+                <.link navigate={~p"/add?tab=cli"} class="font-mono text-brand-deep hover:text-brand">
+                  framecut-grab
+                </.link>
+              </p>
+            </div>
+          <% else %>
+            <div class="flex flex-wrap items-center justify-center gap-3 mt-8">
+              <.link navigate={~p"/add"} class="btn-primary">
+                + Add a video
+              </.link>
+              <.link navigate={~p"/gifs"} class="btn-secondary">
+                Browse the GIF feed
+              </.link>
+              <.link navigate={~p"/timeline"} class="btn-secondary">
+                Public timeline
+              </.link>
+              <button
+                type="button"
+                phx-click="random_gif"
+                class="btn-secondary"
+                title="Jump into the editor with a random clip"
+              >
+                Random GIF
+              </button>
+            </div>
+          <% end %>
         </div>
       </div>
 
-    <!-- Search Section -->
-      <div class="px-6 py-8">
-        <div class="max-w-4xl mx-auto">
-          <.form for={@search_form} phx-submit="search" class="mb-8">
-            <div class="flex gap-4">
-              <input
-                type="text"
-                name="search[term]"
-                value={@search_term}
-                placeholder="Search everything said in the library..."
-                class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-3 text-white placeholder-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono"
-                phx-debounce="300"
-              />
-              <button
-                type="submit"
-                class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-mono font-medium transition-colors"
-                disabled={@loading}
-              >
-                <%= if @loading do %>
-                  Searching...
-                <% else %>
-                  Search
-                <% end %>
-              </button>
-              <%= if @has_searched do %>
-                <button
-                  type="button"
-                  phx-click="clear_search"
-                  class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-3 rounded-lg font-mono transition-colors"
-                >
-                  Clear
-                </button>
-              <% end %>
+      <%= unless Enum.empty?(@all_videos) do %>
+        <div class="px-6 py-8">
+          <div class="max-w-6xl mx-auto">
+            <!-- Search -->
+            <div class="max-w-4xl mx-auto mb-10">
+              <.form for={@search_form} phx-submit="search" phx-change="search">
+                <div class="flex gap-3">
+                  <input
+                    type="text"
+                    name="search[term]"
+                    value={@search_term}
+                    placeholder="Search everything said in the library..."
+                    class="input flex-1"
+                    phx-debounce="500"
+                    autocomplete="off"
+                  />
+                  <button type="submit" class="btn-secondary" disabled={@loading}>
+                    Search
+                  </button>
+                  <button :if={@has_searched} type="button" phx-click="clear_search" class="btn-ghost">
+                    Clear
+                  </button>
+                </div>
+              </.form>
+              <p :if={@search_hint} class="mt-2 font-mono text-xs text-stone-500">
+                {@search_hint}
+              </p>
             </div>
-          </.form>
 
-    <!-- Caption suggestions (show when no search) -->
-          <%= unless @has_searched do %>
-            <%= if @random_quotes != [] do %>
-              <div class="mb-8">
-                <h2 class="text-lg font-bold font-mono text-blue-400 mb-4">
-                  Try searching for these lines:
+            <%= unless @has_searched do %>
+              <!-- Caption suggestions -->
+              <div :if={@random_quotes != []} class="mb-10">
+                <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-3">
+                  Try searching for these lines
                 </h2>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  <%= for quote <- @random_quotes do %>
-                    <button
-                      phx-click="select_quote"
-                      phx-value-quote={quote}
-                      class="bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-lg p-4 text-left transition-all hover:border-blue-500 group"
-                    >
-                      <p class="text-gray-200 text-sm leading-relaxed group-hover:text-white font-mono">
-                        "{quote}"
-                      </p>
-                    </button>
+                  <button
+                    :for={quote <- @random_quotes}
+                    type="button"
+                    phx-click="select_quote"
+                    phx-value-quote={quote}
+                    class="card card-hover p-4 text-left"
+                  >
+                    <p class="text-sm leading-relaxed text-stone-700">
+                      "{quote}"
+                    </p>
+                  </button>
+                </div>
+              </div>
+              
+    <!-- Video library -->
+              <div>
+                <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-3">
+                  Video library
+                </h2>
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  <%= for video <- @all_videos do %>
+                    <%= if video.status == "completed" do %>
+                      <.link
+                        navigate={~p"/video/#{video.id}"}
+                        class="card card-hover overflow-hidden block"
+                      >
+                        <.video_thumb video={video} thumb_id={@thumbnails[video.id]} />
+                        <div class="p-3">
+                          <h3 class="text-sm font-medium text-stone-900 truncate">
+                            {video.title}
+                          </h3>
+                          <div class="mt-1 flex items-center gap-3 font-mono text-xs text-stone-500">
+                            <span :if={video.frame_count}>{video.frame_count} frames</span>
+                            <span :if={video.duration_ms}>{format_duration(video.duration_ms)}</span>
+                          </div>
+                        </div>
+                      </.link>
+                    <% else %>
+                      <div class="card overflow-hidden">
+                        <.video_thumb video={video} thumb_id={@thumbnails[video.id]} />
+                        <div class="p-3">
+                          <h3 class="text-sm font-medium text-stone-700 truncate">
+                            {video.title}
+                          </h3>
+                          <p class="mt-1 font-mono text-xs text-stone-500">
+                            {status_note(video.status)}
+                          </p>
+                        </div>
+                      </div>
+                    <% end %>
                   <% end %>
                 </div>
               </div>
             <% end %>
-
-            <!-- Video Library -->
-            <div class="mt-8">
-              <h2 class="text-lg font-bold font-mono text-green-400 mb-4">
-                Video library:
-              </h2>
-              <%= if Enum.empty?(@all_videos) do %>
-                <div class="bg-gray-800 border border-gray-600 rounded-lg p-8 text-center">
-                  <p class="text-gray-300 font-mono mb-4">
-                    The library is empty. Add the first video to start cutting frames.
-                  </p>
-                  <.link
-                    navigate={~p"/add"}
-                    class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-mono font-medium transition-colors"
-                  >
-                    + Add a video
-                  </.link>
-                </div>
-              <% else %>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <%= for video <- @all_videos do %>
-                    <.link
-                      navigate={~p"/video/#{video.id}"}
-                      class="bg-gray-800 hover:bg-gray-700 border border-gray-600 hover:border-green-500 rounded-lg p-4 transition-all group"
-                    >
-                      <div class="flex items-center justify-between">
-                        <div class="flex-1">
-                          <h3 class="text-white font-mono font-medium group-hover:text-green-400 transition-colors">
-                            <%= video.title %>
-                          </h3>
-                          <div class="flex items-center gap-4 mt-2 text-xs text-gray-400 font-mono">
-                            <%= if video.frame_count do %>
-                              <span>📸 <%= video.frame_count %> frames</span>
-                            <% end %>
-                            <%= if video.duration_ms do %>
-                              <span>⏱️ <%= format_duration(video.duration_ms) %></span>
-                            <% end %>
-                            <span class={"inline-flex items-center px-2 py-0.5 rounded text-xs font-medium #{status_badge_class(video.status)}"}>
-                              <%= video.status %>
-                            </span>
-                          </div>
-                        </div>
-                        <div class="text-gray-400 group-hover:text-green-400 transition-colors">
-                          →
-                        </div>
-                      </div>
-                    </.link>
-                  <% end %>
-                </div>
-              <% end %>
-            </div>
-          <% end %>
-
-    <!-- Search Results -->
-          <%= if @loading do %>
-            <div class="text-center py-12">
-              <div class="text-gray-400 font-mono">Searching the library...</div>
-            </div>
-          <% end %>
-
-          <%= if @has_searched and not @loading do %>
-            <%= if Enum.empty?(@search_results) do %>
-              <div class="text-center py-12">
-                <div class="text-gray-400 font-mono mb-4">No results found for "{@search_term}"</div>
-                <p class="text-gray-500 text-sm mb-6">
-                  Try a different search term or browse the suggestions above.
-                </p>
-
-    <!-- Feeling Lucky Section -->
-                <div class="bg-gray-800 border border-gray-600 rounded-lg p-6 max-w-md mx-auto">
-                  <h3 class="text-lg font-bold font-mono text-yellow-400 mb-3">🎲 Feeling Lucky?</h3>
-                  <p class="text-gray-300 text-sm mb-4 font-mono">
-                    Can't find what you're looking for? Let us surprise you with a random clip from the library.
-                  </p>
-                  <button
-                    phx-click="random_gif"
-                    class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-mono font-bold transition-colors shadow-lg text-lg"
-                  >
-                    🎲 Generate Random GIF
-                  </button>
+            
+    <!-- Search loading skeletons -->
+            <div :if={@loading} class="space-y-4" aria-busy="true">
+              <div :for={_i <- 1..3} class="card p-6">
+                <div class="h-5 w-1/3 rounded bg-stone-200 animate-pulse"></div>
+                <div class="mt-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                  <div :for={_j <- 1..6} class="aspect-video rounded-lg bg-stone-200 animate-pulse">
+                  </div>
                 </div>
               </div>
-            <% else %>
-              <div class="space-y-8">
-                <div class="flex items-center justify-between">
-                  <h2 class="text-lg font-bold font-mono text-blue-400">
+            </div>
+            
+    <!-- Search results -->
+            <%= if @has_searched and not @loading do %>
+              <%= if Enum.empty?(@search_results) do %>
+                <div class="border-2 border-dashed border-stone-300 rounded-xl bg-white py-16 px-6 text-center">
+                  <span class="hero-magnifying-glass size-10 text-stone-300 mx-auto block"></span>
+                  <h3 class="mt-4 font-mono uppercase tracking-wider text-stone-700">
+                    No matches for "{@search_term}"
+                  </h3>
+                  <p class="mt-2 text-sm text-stone-500">
+                    Try a different phrase, or let the library surprise you with a random clip.
+                  </p>
+                  <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+                    <button type="button" phx-click="random_gif" class="btn-secondary">
+                      Random GIF
+                    </button>
+                    <button type="button" phx-click="clear_search" class="btn-ghost">
+                      Clear search
+                    </button>
+                  </div>
+                </div>
+              <% else %>
+                <div class="space-y-6">
+                  <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500">
                     Found {total_frame_count(@search_results)} frames across {length(@search_results)} videos
                   </h2>
-                </div>
 
-    <!-- Results grouped by video -->
-                <%= for {video, frames} <- @search_results do %>
-                  <div class="bg-gray-800 border border-gray-700 rounded-lg p-6">
-                    <div class="flex items-center justify-between mb-4">
+                  <div :for={{video, frames} <- @search_results} class="card p-6">
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                       <div>
-                        <h3 class="text-xl font-bold font-mono text-white">{video.title}</h3>
-                        <p class="text-gray-400 text-sm font-mono">
+                        <h3 class="text-lg font-bold font-mono text-stone-900">
+                          {video.title}
+                        </h3>
+                        <p class="font-mono text-xs text-stone-500">
                           {length(frames)} matching frames
                         </p>
                       </div>
                       <.link
                         navigate={build_timeline_link(video.id, frames, @search_term)}
-                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
+                        class="btn-secondary"
                       >
-                        Create GIF →
+                        Create GIF
                       </.link>
                     </div>
 
-    <!-- Frame previews -->
                     <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                      <%= for frame <- Enum.take(frames, 12) do %>
-                        <div class="group">
-                          <%= if frame.image_data do %>
-                            <div
-                              class="relative cursor-pointer"
-                              onclick={"window.location.href = '#{build_frame_context_link(video.id, frame, @search_term)}'"}
-                            >
-                              <img
-                                src={"data:image/jpeg;base64,#{encode_frame_image(frame.image_data)}"}
-                                alt={"Frame ##{frame.frame_number}"}
-                                class="w-full aspect-video object-cover rounded-lg border border-gray-600 group-hover:border-blue-500 transition-colors hover:scale-105 transform transition-transform duration-200"
-                              />
-                              <div class="absolute bottom-1 right-1 bg-black bg-opacity-75 text-white text-xs px-1 py-0.5 rounded font-mono">
-                                #{frame.frame_number}
-                              </div>
-                              <div class="absolute inset-0 bg-blue-500 bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 rounded-lg flex items-center justify-center">
-                                <div class="opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-black bg-opacity-75 text-white px-2 py-1 rounded text-xs font-mono">
-                                  Click to compose GIF
-                                </div>
-                              </div>
-                            </div>
-                          <% else %>
-                            <div class="w-full aspect-video bg-gray-700 rounded-lg border border-gray-600 flex items-center justify-center">
-                              <span class="text-gray-400 text-xs font-mono">No image</span>
-                            </div>
-                          <% end %>
-
-    <!-- Caption preview -->
-                          <%= if frame.caption_texts do %>
-                            <div class="mt-2 p-2 bg-gray-700 rounded text-xs leading-tight">
-                              <p class="text-gray-300 font-mono line-clamp-2">
-                                "{String.slice(frame.caption_texts, 0, 100)}{if String.length(
-                                                                                  frame.caption_texts
-                                                                                ) > 100,
-                                                                                do: "..."}"
-                              </p>
-                            </div>
-                          <% end %>
-                        </div>
-                      <% end %>
-
-                      <%= if length(frames) > 12 do %>
-                        <div class="col-span-full text-center mt-4">
-                          <span class="text-gray-400 font-mono text-sm">
-                            + {length(frames) - 12} more frames
+                      <div :for={frame <- Enum.take(frames, 12)}>
+                        <.link
+                          navigate={build_frame_context_link(video.id, frame, @search_term)}
+                          class="relative block group"
+                        >
+                          <div class="aspect-video rounded-lg border border-stone-200 bg-stone-100 overflow-hidden group-hover:border-stone-300 transition-colors">
+                            <img
+                              src={~p"/frame/#{frame.id}"}
+                              alt={"Frame ##{frame.frame_number}"}
+                              loading="lazy"
+                              class="w-full h-full object-cover"
+                            />
+                          </div>
+                          <span class="absolute bottom-1 right-1 rounded border border-stone-200 bg-white/80 backdrop-blur px-1 py-0.5 font-mono text-xs text-stone-700">
+                            #{frame.frame_number}
                           </span>
-                        </div>
-                      <% end %>
+                        </.link>
+
+                        <p
+                          :if={frame.caption_texts && frame.caption_texts != ""}
+                          class="mt-1 text-xs text-stone-500 line-clamp-2"
+                        >
+                          "{String.slice(frame.caption_texts, 0, 100)}{if String.length(
+                                                                            frame.caption_texts
+                                                                          ) > 100,
+                                                                          do: "..."}"
+                        </p>
+                      </div>
+
+                      <div :if={length(frames) > 12} class="col-span-full text-center mt-2">
+                        <span class="font-mono text-xs text-stone-500">
+                          + {length(frames) - 12} more frames
+                        </span>
+                      </div>
                     </div>
                   </div>
-                <% end %>
-              </div>
+                </div>
+              <% end %>
             <% end %>
-          <% end %>
+          </div>
         </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  attr :video, :map, required: true
+  attr :thumb_id, :integer, default: nil
+
+  defp video_thumb(assigns) do
+    ~H"""
+    <div class="relative aspect-video bg-stone-100 border-b border-stone-200 overflow-hidden">
+      <img
+        :if={@thumb_id}
+        src={~p"/frame/#{@thumb_id}"}
+        alt={@video.title}
+        loading="lazy"
+        class="w-full h-full object-cover"
+      />
+      <div :if={is_nil(@thumb_id)} class="w-full h-full flex items-center justify-center">
+        <span class="hero-film size-10 text-stone-300"></span>
       </div>
+      <%= case status_badge(@video.status) do %>
+        <% nil -> %>
+        <% {badge_class, label} -> %>
+          <span class={["badge absolute top-2 right-2 bg-white/80 backdrop-blur", badge_class]}>
+            {label}
+          </span>
+      <% end %>
     </div>
     """
   end
@@ -434,23 +438,6 @@ defmodule NathanForUsWeb.HomeLive do
     ~p"/video/#{video_id}?search=#{encoded_search_term}&context_frame=#{frame.frame_number}"
   end
 
-  defp encode_frame_image(nil), do: ""
-
-  defp encode_frame_image(hex_data) when is_binary(hex_data) do
-    case String.starts_with?(hex_data, "\\x") do
-      true ->
-        hex_string = String.slice(hex_data, 2..-1//1)
-
-        case Base.decode16(hex_string, case: :lower) do
-          {:ok, binary_data} -> Base.encode64(binary_data)
-          :error -> ""
-        end
-
-      false ->
-        Base.encode64(hex_data)
-    end
-  end
-
   defp format_duration(duration_ms) when is_integer(duration_ms) do
     total_seconds = div(duration_ms, 1000)
     minutes = div(total_seconds, 60)
@@ -460,9 +447,12 @@ defmodule NathanForUsWeb.HomeLive do
 
   defp format_duration(_), do: "Unknown"
 
-  defp status_badge_class("completed"), do: "bg-green-100 text-green-800"
-  defp status_badge_class("processing"), do: "bg-yellow-100 text-yellow-800"
-  defp status_badge_class("pending"), do: "bg-gray-100 text-gray-800"
-  defp status_badge_class("failed"), do: "bg-red-100 text-red-800"
-  defp status_badge_class(_), do: "bg-gray-100 text-gray-800"
+  # Completed videos get no badge; only in-flight or failed states are marked.
+  defp status_badge("processing"), do: {"badge-warning animate-pulse", "processing"}
+  defp status_badge("pending"), do: {"badge-neutral", "pending"}
+  defp status_badge("failed"), do: {"badge-danger", "failed"}
+  defp status_badge(_), do: nil
+
+  defp status_note("failed"), do: "Failed"
+  defp status_note(_), do: "Processing — check back soon"
 end
