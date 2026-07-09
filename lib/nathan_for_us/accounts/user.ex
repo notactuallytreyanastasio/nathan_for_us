@@ -10,6 +10,7 @@ defmodule NathanForUs.Accounts.User do
     field :current_password, :string, virtual: true, redact: true
     field :confirmed_at, :utc_datetime
     field :is_admin, :boolean, default: false
+    field :api_key, :string, redact: true
 
     timestamps(type: :utc_datetime)
   end

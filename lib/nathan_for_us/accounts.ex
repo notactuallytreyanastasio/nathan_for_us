@@ -77,7 +77,35 @@ defmodule NathanForUs.Accounts do
   def register_user(attrs) do
     %User{}
     |> User.registration_changeset(attrs)
+    |> Ecto.Changeset.put_change(:api_key, generate_api_key())
     |> Repo.insert()
+  end
+
+  @doc """
+  Generates a personal ingest API key (the `fc_` prefix makes keys easy to
+  recognize in configs and logs).
+  """
+  def generate_api_key do
+    "fc_" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+  end
+
+  @doc """
+  Gets a user by their personal ingest API key. Used by the ingest API to
+  authenticate uploads from the grabber.
+  """
+  def get_user_by_api_key(api_key) when is_binary(api_key) and api_key != "" do
+    Repo.get_by(User, api_key: api_key)
+  end
+
+  def get_user_by_api_key(_), do: nil
+
+  @doc """
+  Replaces a user's API key (e.g. after a leak). Returns the updated user.
+  """
+  def regenerate_api_key(%User{} = user) do
+    user
+    |> Ecto.Changeset.change(api_key: generate_api_key())
+    |> Repo.update()
   end
 
   @doc """
