@@ -12,7 +12,18 @@ defmodule NathanForUsWeb.HomeLive do
   alias NathanForUs.{Video, Repo}
   alias NathanForUs.Video.Video, as: VideoModel
 
+  on_mount {NathanForUsWeb.UserAuth, :mount_current_user}
+
   def mount(_params, _session, socket) do
+    if socket.assigns.current_user do
+      {:ok, mount_library(socket)}
+    else
+      # Logged-out visitors get the landing page — no library queries needed.
+      {:ok, assign(socket, :page_title, "Turn any video into GIFs")}
+    end
+  end
+
+  defp mount_library(socket) do
     # The suggestions query uses ORDER BY RANDOM(); only run it once the
     # socket is connected so it doesn't execute twice per visit.
     random_quotes =
@@ -24,20 +35,17 @@ defmodule NathanForUsWeb.HomeLive do
 
     thumbnails = Video.get_video_thumbnails(Enum.map(all_videos, & &1.id))
 
-    socket =
-      socket
-      |> assign(:page_title, "Turn any video into GIFs")
-      |> assign(:search_term, "")
-      |> assign(:search_form, to_form(%{}))
-      |> assign(:random_quotes, random_quotes)
-      |> assign(:all_videos, all_videos)
-      |> assign(:thumbnails, thumbnails)
-      |> assign(:search_results, [])
-      |> assign(:loading, false)
-      |> assign(:has_searched, false)
-      |> assign(:search_hint, nil)
-
-    {:ok, socket}
+    socket
+    |> assign(:page_title, "Turn any video into GIFs")
+    |> assign(:search_term, "")
+    |> assign(:search_form, to_form(%{}))
+    |> assign(:random_quotes, random_quotes)
+    |> assign(:all_videos, all_videos)
+    |> assign(:thumbnails, thumbnails)
+    |> assign(:search_results, [])
+    |> assign(:loading, false)
+    |> assign(:has_searched, false)
+    |> assign(:search_hint, nil)
   end
 
   def handle_event("search", %{"search" => %{"term" => raw_term}} = params, socket) do
@@ -126,6 +134,73 @@ defmodule NathanForUsWeb.HomeLive do
       |> assign(:search_hint, nil)
 
     {:noreply, socket}
+  end
+
+  def render(%{current_user: nil} = assigns) do
+    ~H"""
+    <div class="min-h-screen bg-white">
+      <div class="max-w-3xl mx-auto px-6 py-20 sm:py-28 text-center">
+        <h1 class="text-5xl sm:text-6xl font-bold font-mono tracking-tight text-stone-900">
+          FRAMECUT <span class="text-brand">&#9654;</span>
+        </h1>
+        <p class="mt-4 text-xl sm:text-2xl text-stone-700">
+          Turn any video into GIFs, frame by frame.
+        </p>
+
+        <div class="mt-16 space-y-12 text-left">
+          <div class="flex items-start gap-6">
+            <span class="font-mono text-5xl sm:text-6xl font-bold text-brand shrink-0 w-16">1</span>
+            <div>
+              <h2 class="font-mono uppercase tracking-wider text-2xl font-bold text-stone-900">
+                Grab
+              </h2>
+              <p class="mt-1 text-lg text-stone-600">
+                Paste a video link into the desktop tool.
+                It slices the video into frames — one for every second.
+              </p>
+            </div>
+          </div>
+          <div class="flex items-start gap-6">
+            <span class="font-mono text-5xl sm:text-6xl font-bold text-brand shrink-0 w-16">2</span>
+            <div>
+              <h2 class="font-mono uppercase tracking-wider text-2xl font-bold text-stone-900">
+                Upload
+              </h2>
+              <p class="mt-1 text-lg text-stone-600">
+                The frames and captions land here automatically, searchable by what was said.
+              </p>
+            </div>
+          </div>
+          <div class="flex items-start gap-6">
+            <span class="font-mono text-5xl sm:text-6xl font-bold text-brand shrink-0 w-16">3</span>
+            <div>
+              <h2 class="font-mono uppercase tracking-wider text-2xl font-bold text-stone-900">
+                GIF
+              </h2>
+              <p class="mt-1 text-lg text-stone-600">
+                Drag across the filmstrip, pick a range, get a GIF. Share it anywhere.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-16">
+          <.link navigate={~p"/users/register"} class="btn-primary px-8 py-4 text-lg">
+            Get started &mdash; one form
+          </.link>
+          <p class="mt-6 text-stone-500">
+            <.link navigate={~p"/gifs"} class="text-brand-deep hover:text-brand">
+              See GIFs made here &rarr;
+            </.link>
+            <span class="text-stone-300 mx-2">|</span>
+            <.link navigate={~p"/users/log_in"} class="text-brand-deep hover:text-brand">
+              Log in
+            </.link>
+          </p>
+        </div>
+      </div>
+    </div>
+    """
   end
 
   def render(assigns) do
