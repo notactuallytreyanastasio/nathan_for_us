@@ -21,7 +21,7 @@ defmodule NathanForUsWeb.SetupLiveTest do
       assert html =~ user.api_key
       assert html =~ "FRAMECUT_API_KEY"
       assert html =~ "FRAMECUT_SERVER"
-      assert html =~ "/downloads/framecut-grab-darwin-arm64"
+      assert html =~ "/downloads/Framecut-Grabber-macos.zip"
       assert html =~ "Rip your first video"
     end
 

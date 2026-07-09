@@ -51,19 +51,19 @@ defmodule NathanForUsWeb.SetupLive do
             One binary with yt-dlp and ffmpeg built in — nothing else to install.
           </p>
           <div class="flex flex-wrap gap-2 mt-4">
-            <a href="/downloads/framecut-grab-darwin-arm64" download class="btn-secondary">
-              macOS (Apple Silicon)
+            <a href="/downloads/Framecut-Grabber-macos.zip" download class="btn-secondary">
+              macOS (universal .app)
             </a>
-            <a href="/downloads/framecut-grab-darwin-amd64" download class="btn-secondary">
-              macOS (Intel)
-            </a>
-            <a href="/downloads/framecut-grab-linux-amd64" download class="btn-secondary">
+            <a href="/downloads/framecut-grabber-linux-amd64" download class="btn-secondary">
               Linux
             </a>
-            <a href="/downloads/framecut-grab-windows-amd64.exe" download class="btn-secondary">
+            <a href="/downloads/Framecut-Grabber-windows-amd64.exe" download class="btn-secondary">
               Windows
             </a>
           </div>
+          <p class="mt-2 font-mono text-xs text-stone-500">
+            macOS: unzip, right-click &rarr; Open the first time.
+          </p>
         </section>
         
     <!-- Step 2: connect -->

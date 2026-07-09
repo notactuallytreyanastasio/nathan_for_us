@@ -1,28 +1,42 @@
 FRAMECUT GRABBER
 ================
 
-Two ways to run the grabber:
+Three ways to run the grabber:
 
-1. THE BINARY (recommended — zero dependencies)
-   Download framecut-grab-<your-platform> from the /add page.
-   yt-dlp and ffmpeg are built into the binary; nothing to install.
+1. THE DESKTOP APP (recommended — zero dependencies)
+   Download it from the /setup page:
 
-     chmod +x framecut-grab-darwin-arm64
-     ./framecut-grab-darwin-arm64 "https://www.youtube.com/watch?v=..." \
+     macOS    Framecut-Grabber-macos.zip        unzip, right-click > Open once
+     Windows  Framecut-Grabber-windows-amd64.exe
+     Linux    framecut-grabber-linux-amd64      chmod +x, needs a desktop w/ OpenGL
+
+   yt-dlp and ffmpeg are built in; nothing to install. On first open it
+   walks you through connecting to your server (your personal API key
+   lives on the /setup page, or set FRAMECUT_SERVER / FRAMECUT_API_KEY
+   in your environment and it configures itself). Paste a link, hit
+   Grab, then "Open in Framecut" to jump straight into the editor.
+
+2. THE SAME BINARY, FROM THE TERMINAL
+
+     chmod +x framecut-grabber*
+     ./framecut-grabber* "https://www.youtube.com/watch?v=..." \
          --server https://your-framecut-server \
-         --api-key YOUR_API_KEY
+         --api-key fc_your_key
+
+   (On macOS the CLI lives inside the app bundle:
+    "Framecut Grabber.app/Contents/MacOS/". Flags beat the env vars.)
 
    On first run it unpacks its bundled tools to your user cache directory
    (~/Library/Caches/framecut on macOS, ~/.cache/framecut on Linux).
 
-2. THE PYTHON SCRIPT (if you already have the tools)
+3. THE PYTHON SCRIPT (if you already have the tools)
    Requires Python 3.9+, yt-dlp (pip install yt-dlp) and ffmpeg on PATH.
 
      python3 framecut_grab.py "https://www.youtube.com/watch?v=..." \
          --server https://your-framecut-server \
-         --api-key YOUR_API_KEY
+         --api-key fc_your_key
 
-Both accept the same flags:
+CLI and Python accept the same flags:
 
   --fps N                   frames per second to extract (default 1.0)
   --jpeg-quality N          0-100 (default 85)
@@ -36,11 +50,11 @@ Both accept the same flags:
 
 TROUBLESHOOTING
 
-  401 invalid api key      ask the site admin for the INGEST_API_KEY
-  503 ingest disabled      the server has no INGEST_API_KEY configured
+  401 invalid api key      copy your key again from the /setup page (it
+                           changes if you hit Regenerate)
   403 / age-gate errors    add --cookies-from-browser chrome (or firefox,
                            safari) so yt-dlp can use your logged-in session
   macOS "cannot be opened" right-click > Open once, or:
-                           xattr -d com.apple.quarantine framecut-grab-*
+                           xattr -d com.apple.quarantine "Framecut Grabber.app"
 
 Only grab content you own or have the rights to use.

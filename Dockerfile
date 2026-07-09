@@ -7,14 +7,26 @@
 ARG BUILDER_IMAGE="hexpm/elixir:1.18.1-erlang-27.3.4.8-debian-bookworm-20260202-slim"
 ARG RUNNER_IMAGE="debian:bookworm-20260202-slim"
 
-# Build the framecut-grab companion binaries (yt-dlp + ffmpeg embedded).
-# Layer-cached on tools/grabber content, so the ~250MB of vendored tool
-# downloads only re-run when the grabber changes.
-FROM golang:1.22-bookworm AS grabber
+# Grabber desktop binaries come from the GitHub release built by
+# .github/workflows/grabber-release.yml — the Fyne GUI needs CGO on native
+# macOS/Windows/Linux runners, so they can't be cross-compiled here anymore.
+# Bump GRABBER_RELEASE when a new grabber tag ships.
+FROM debian:bookworm-slim AS grabber
 
-WORKDIR /src
-COPY tools/grabber ./
-RUN FRAMECUT_GRAB_OUT=/out ./build.sh all
+ARG GRABBER_RELEASE=grabber-v1.0.0
+ARG GRABBER_REPO=notactuallytreyanastasio/nathan_for_us
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get clean && rm -f /var/lib/apt/lists/*_*
+
+WORKDIR /out
+RUN base="https://github.com/${GRABBER_REPO}/releases/download/${GRABBER_RELEASE}" \
+    && curl -fsSL -O "$base/Framecut-Grabber-macos.zip" \
+    && curl -fsSL -O "$base/Framecut-Grabber-windows-amd64.exe" \
+    && curl -fsSL -O "$base/framecut-grabber-linux-amd64" \
+    && curl -fsSL -O "$base/SHA256SUMS.txt" \
+    && sha256sum -c SHA256SUMS.txt \
+    && chmod +x framecut-grabber-linux-amd64
 
 FROM ${BUILDER_IMAGE} AS builder
 

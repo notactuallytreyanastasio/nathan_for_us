@@ -422,28 +422,21 @@ defmodule NathanForUsWeb.AddVideoLive do
                 Download the grabber for your machine:
                 <div class="flex flex-wrap gap-2 mt-2 ml-4">
                   <a
-                    href="/downloads/framecut-grab-darwin-arm64"
+                    href="/downloads/Framecut-Grabber-macos.zip"
                     download
                     class="btn-secondary px-3 py-1 text-xs"
                   >
-                    macOS (Apple Silicon)
+                    macOS (universal .app)
                   </a>
                   <a
-                    href="/downloads/framecut-grab-darwin-amd64"
-                    download
-                    class="btn-secondary px-3 py-1 text-xs"
-                  >
-                    macOS (Intel)
-                  </a>
-                  <a
-                    href="/downloads/framecut-grab-linux-amd64"
+                    href="/downloads/framecut-grabber-linux-amd64"
                     download
                     class="btn-secondary px-3 py-1 text-xs"
                   >
                     Linux
                   </a>
                   <a
-                    href="/downloads/framecut-grab-windows-amd64.exe"
+                    href="/downloads/Framecut-Grabber-windows-amd64.exe"
                     download
                     class="btn-secondary px-3 py-1 text-xs"
                   >
@@ -764,16 +757,19 @@ defmodule NathanForUsWeb.AddVideoLive do
 
     example_url = "https://www.youtube.com/watch?v=..."
 
-    unix_run = ~s(./framecut-grab-* "#{example_url}" --server #{base_url} --api-key #{shown_key})
+    # Linux downloads a bare binary; the macOS .app carries the same CLI at
+    # "Framecut Grabber.app/Contents/MacOS/". The glob covers both names.
+    unix_run =
+      ~s(./framecut-grabber* "#{example_url}" --server #{base_url} --api-key #{shown_key})
 
     unix_command =
-      "chmod +x framecut-grab-*\n" <>
-        ~s(./framecut-grab-* "#{example_url}" \\\n) <>
+      "chmod +x framecut-grabber*\n" <>
+        ~s(./framecut-grabber* "#{example_url}" \\\n) <>
         "  --server #{base_url} \\\n" <>
         "  --api-key #{shown_key}"
 
     windows_command =
-      ~s(.\\framecut-grab-windows-amd64.exe "#{example_url}" --server #{base_url} --api-key #{shown_key})
+      ~s(.\\Framecut-Grabber-windows-amd64.exe "#{example_url}" --server #{base_url} --api-key #{shown_key})
 
     socket
     |> assign(:unix_command, unix_command)
