@@ -873,15 +873,14 @@ defmodule NathanForUs.Video do
             {query, [search_pattern, limit]}
 
           video_id when is_integer(video_id) ->
-            # Search within specific video
+            # Search within specific video (captions carry video_id directly)
             query = """
             SELECT text FROM (
-              SELECT DISTINCT text, length(text) as text_length 
-              FROM video_captions vc
-              JOIN video_frames vf ON vc.video_frame_id = vf.id
-              WHERE vf.video_id = $1 AND vc.text ILIKE $2
-            ) sub 
-            ORDER BY text_length 
+              SELECT DISTINCT text, length(text) as text_length
+              FROM video_captions
+              WHERE video_id = $1 AND text ILIKE $2
+            ) sub
+            ORDER BY text_length
             LIMIT $3
             """
 
@@ -893,12 +892,11 @@ defmodule NathanForUs.Video do
 
             query = """
             SELECT text FROM (
-              SELECT DISTINCT text, length(text) as text_length 
-              FROM video_captions vc
-              JOIN video_frames vf ON vc.video_frame_id = vf.id
-              WHERE vf.video_id IN (#{placeholders}) AND vc.text ILIKE $#{length(video_ids) + 1}
-            ) sub 
-            ORDER BY text_length 
+              SELECT DISTINCT text, length(text) as text_length
+              FROM video_captions
+              WHERE video_id IN (#{placeholders}) AND text ILIKE $#{length(video_ids) + 1}
+            ) sub
+            ORDER BY text_length
             LIMIT $#{length(video_ids) + 2}
             """
 
@@ -930,25 +928,16 @@ defmodule NathanForUs.Video do
   def get_sample_caption_suggestions(limit \\ 6) do
     query = """
     SELECT text FROM (
-      SELECT DISTINCT text, length(text) as text_length,
-        CASE 
-          WHEN text ILIKE '%business%' THEN 1
-          WHEN text ILIKE '%rehearsal%' THEN 1
-          WHEN text ILIKE '%plan%' THEN 1
-          WHEN text ILIKE '%strategy%' THEN 1
-          WHEN text ILIKE '%prepared%' THEN 1
-          WHEN text ILIKE '%nathan%' THEN 1
-          ELSE 2
-        END as priority
-      FROM video_captions 
-      WHERE text IS NOT NULL 
+      SELECT DISTINCT text
+      FROM video_captions
+      WHERE text IS NOT NULL
         AND length(text) BETWEEN 10 AND 80
         AND text NOT ILIKE '%[%'
         AND text NOT ILIKE '%]%'
         AND text NOT ILIKE '%♪%'
         AND text NOT ILIKE '%music%'
-    ) sub 
-    ORDER BY priority, RANDOM()
+    ) sub
+    ORDER BY RANDOM()
     LIMIT $1
     """
 
@@ -963,15 +952,7 @@ defmodule NathanForUs.Video do
       {:error, reason} ->
         require Logger
         Logger.warning("Sample caption suggestions query failed: #{inspect(reason)}")
-        # Fallback suggestions
-        [
-          "I graduated from one of Canada's top business schools",
-          "The plan is working perfectly",
-          "I've been rehearsing for this moment",
-          "This is a business strategy",
-          "I'm prepared for anything",
-          "Let's get down to business"
-        ]
+        []
     end
   end
 

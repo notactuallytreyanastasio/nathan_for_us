@@ -20,17 +20,14 @@ defmodule NathanForUs.VideoSampleSuggestionsTest do
         })
         |> Repo.insert()
 
-      # Create various test captions to test filtering and prioritization
+      # Create various test captions to test filtering
       test_captions = [
-        # Priority 1 captions (should be preferred)
-        "I graduated from one of Canada's top business schools",
-        "This is a solid business strategy",
-        "I've been rehearsing for this moment",
-        "The plan is working perfectly",
-        "I'm prepared for anything that comes up",
-        "Nathan always has a strategy ready",
-
-        # Priority 2 captions (normal captions)
+        "I graduated from one of Canada's top art schools",
+        "This is a solid opening line",
+        "I've been waiting for this moment",
+        "The show is going perfectly",
+        "I'm ready for anything that comes up",
+        "Always have an exit line ready",
         "This is a normal conversation piece",
         "We need to discuss the project details",
         "The meeting went very well today",
@@ -88,23 +85,6 @@ defmodule NathanForUs.VideoSampleSuggestionsTest do
       assert length(result) <= 3
     end
 
-    test "prioritizes business/nathan-related captions" do
-      result = Video.get_sample_caption_suggestions(10)
-
-      # Should include priority captions (business, rehearsal, plan, etc.)
-      priority_keywords = ["business", "rehearsal", "plan", "strategy", "prepared", "nathan"]
-
-      # At least some results should contain priority keywords
-      has_priority_content =
-        Enum.any?(result, fn suggestion ->
-          Enum.any?(priority_keywords, fn keyword ->
-            String.contains?(String.downcase(suggestion), keyword)
-          end)
-        end)
-
-      assert has_priority_content
-    end
-
     test "filters out unwanted content" do
       result = Video.get_sample_caption_suggestions(20)
 
@@ -150,53 +130,7 @@ defmodule NathanForUs.VideoSampleSuggestionsTest do
 
       result = Video.get_sample_caption_suggestions()
 
-      # Should return fallback suggestions
-      assert is_list(result)
-      # Changed from > 0 to >= 0 since empty DB may return fallback or empty
-      assert length(result) >= 0
-
-      # If result is not empty, should include expected fallback content
-      if length(result) > 0 do
-        fallback_content = [
-          "I graduated from one of Canada's top business schools",
-          "The plan is working perfectly",
-          "business"
-        ]
-
-        # At least some fallback content should be present
-        has_fallback =
-          Enum.any?(result, fn suggestion ->
-            Enum.any?(fallback_content, fn content ->
-              String.contains?(String.downcase(suggestion), content)
-            end)
-          end)
-
-        assert has_fallback
-      end
-    end
-
-    test "handles database error gracefully" do
-      # This test verifies the fallback mechanism
-      # In a real database error scenario, the function should return fallback suggestions
-
-      # We can't easily simulate a database error in tests, but we can verify
-      # that the fallback suggestions are reasonable
-      fallback_suggestions = [
-        "I graduated from one of Canada's top business schools",
-        "The plan is working perfectly",
-        "I've been rehearsing for this moment",
-        "This is a business strategy",
-        "I'm prepared for anything",
-        "Let's get down to business"
-      ]
-
-      # All fallback suggestions should meet our criteria
-      assert Enum.all?(fallback_suggestions, fn suggestion ->
-               String.length(suggestion) >= 10 and
-                 String.length(suggestion) <= 80 and
-                 not String.contains?(suggestion, "[") and
-                 not String.contains?(suggestion, "♪")
-             end)
+      assert result == []
     end
 
     test "returns different results on multiple calls due to randomness" do

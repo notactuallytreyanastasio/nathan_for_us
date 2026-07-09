@@ -41,17 +41,11 @@ defmodule Mix.Tasks.Video.Process do
     # Start the application
     Mix.Task.run("app.start")
 
-    # Process the video
-    case process_video(video_path, title, captions_path, fps, quality) do
-      {:ok, video_id} ->
-        Logger.info("✅ Video processing completed successfully!")
-        Logger.info("🆔 Video ID: #{video_id}")
-        show_stats(video_id)
-
-      {:error, reason} ->
-        Logger.error("❌ Video processing failed: #{reason}")
-        System.halt(1)
-    end
+    # Process the video (raises on failure)
+    {:ok, video_id} = process_video(video_path, title, captions_path, fps, quality)
+    Logger.info("✅ Video processing completed successfully!")
+    Logger.info("🆔 Video ID: #{video_id}")
+    show_stats(video_id)
   end
 
   defp process_video(video_path, title, captions_path, fps, quality) do
