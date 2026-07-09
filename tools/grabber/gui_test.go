@@ -63,6 +63,32 @@ func TestGuiBuildOptions(t *testing.T) {
 	})
 }
 
+func TestIsProgressLine(t *testing.T) {
+	progress := []string{
+		"[download]  42.6% of  160.46MiB at  Unknown B/s ETA Unknown",
+		"[download] 100% of  160.46MiB in 00:00:23 at 6.95MiB/s",
+		"  [download]  48.5% of 160MiB at 9.65MiB/s ETA 00:08",
+	}
+	for _, s := range progress {
+		if !isProgressLine(s) {
+			t.Errorf("expected progress line: %q", s)
+		}
+	}
+
+	notProgress := []string{
+		"[download] Destination: /tmp/video.mp4",
+		"downloading video + subtitles...",
+		"slicing frames...",
+		"sliced 214 frames at 1 fps",
+		"",
+	}
+	for _, s := range notProgress {
+		if isProgressLine(s) {
+			t.Errorf("did not expect progress line: %q", s)
+		}
+	}
+}
+
 func TestGuiConfigRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)             // macOS: ~/Library/Application Support

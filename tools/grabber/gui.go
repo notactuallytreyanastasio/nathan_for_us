@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -100,18 +102,60 @@ func runGUI() {
 	resultLink := widget.NewHyperlink("", nil)
 	resultLink.Hide()
 
-	// logBuf is only ever touched on the UI goroutine (inside fyne.Do or the
-	// tap handler), so no locking is needed.
-	var logBuf strings.Builder
+	// yt-dlp and ffmpeg emit hundreds of progress lines a second. Repainting the
+	// widget on every line floods the UI thread and freezes the window, so lines
+	// are buffered under a lock and a pump repaints at a fixed rate below.
+	var (
+		logMu    sync.Mutex
+		logLines []string
+		logDirty bool
+	)
+	const maxLogLines = 500
+
 	appendLine := func(s string) {
-		fyne.Do(func() {
-			logBuf.WriteString(s)
-			logBuf.WriteByte('\n')
-			logView.SetText(logBuf.String())
-			logView.CursorRow = strings.Count(logBuf.String(), "\n")
-			logScroll.ScrollToBottom()
-		})
+		logMu.Lock()
+		// Collapse consecutive download-progress lines into one updating line
+		// instead of thousands of rows.
+		if n := len(logLines); n > 0 && isProgressLine(s) && isProgressLine(logLines[n-1]) {
+			logLines[n-1] = s
+		} else {
+			logLines = append(logLines, s)
+			if len(logLines) > maxLogLines {
+				logLines = logLines[len(logLines)-maxLogLines:]
+			}
+		}
+		logDirty = true
+		logMu.Unlock()
 	}
+
+	resetLog := func() {
+		logMu.Lock()
+		logLines = logLines[:0]
+		logDirty = true
+		logMu.Unlock()
+	}
+
+	// Repaint pump: coalesce buffered lines into a single widget update ~12×/sec,
+	// and only when something actually changed.
+	go func() {
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			logMu.Lock()
+			if !logDirty {
+				logMu.Unlock()
+				continue
+			}
+			text := strings.Join(logLines, "\n")
+			logDirty = false
+			logMu.Unlock()
+
+			fyne.Do(func() {
+				logView.SetText(text)
+				logScroll.ScrollToBottom()
+			})
+		}
+	}()
 
 	var running atomic.Bool
 	grabBtn := widget.NewButton("Grab it", nil)
@@ -145,8 +189,7 @@ func runGUI() {
 
 		// This handler runs on the UI goroutine, so update widgets directly
 		// (fyne.Do is only for background goroutines).
-		logBuf.Reset()
-		logView.SetText("")
+		resetLog()
 		resultLink.Hide()
 		grabBtn.Disable()
 		grabBtn.SetText("Working…")
@@ -203,6 +246,14 @@ func runGUI() {
 
 	w.SetContent(container.NewPadded(container.NewBorder(top, nil, nil, nil, logScroll)))
 	w.ShowAndRun()
+}
+
+// isProgressLine reports whether a log line is a yt-dlp/ffmpeg progress tick
+// (e.g. "[download]  42.6% ... ETA 00:09") so the log can collapse the stream
+// of them into a single updating row.
+func isProgressLine(s string) bool {
+	t := strings.TrimSpace(s)
+	return strings.HasPrefix(t, "[download]") && (strings.Contains(t, "%") || strings.Contains(t, "ETA"))
 }
 
 func guiBuildOptions(urlS, serverS, keyS, fpsS, qualityS, heightS, cookies string, localOnly bool) (options, error) {
