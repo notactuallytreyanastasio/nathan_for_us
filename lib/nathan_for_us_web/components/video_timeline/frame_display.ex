@@ -1,432 +1,137 @@
 defmodule NathanForUsWeb.Components.VideoTimeline.FrameDisplay do
   @moduledoc """
-  Frame grid display component for timeline browser.
+  Filmstrip and minimap for the GIF editor.
+
+  Renders every frame of the video as a lazy-loaded thumbnail strip (images
+  served via `GET /frame/:id`), the brand-colored selection overlay with
+  draggable IN/OUT handles, and a proportional minimap. All pointer
+  interaction is handled by the `Filmstrip` JS hook, which pushes
+  `set_playhead` and `select_range` events.
   """
 
   use NathanForUsWeb, :html
 
-  @doc """
-  Renders the frame grid showing current timeline position frames.
-  """
-  attr :current_frames, :list, required: true
-  attr :loading_frames, :boolean, required: true
-  attr :selected_frame_indices, :list, required: true
-  attr :timeline_position, :float, required: true
-  attr :is_context_view, :boolean, default: false
-  attr :is_caption_filtered, :boolean, default: false
-  attr :expand_count, :integer, default: 3
+  attr :frame_index, :list, required: true
+  attr :frame_count, :integer, required: true
+  attr :playhead, :integer, required: true
+  attr :sel_start, :integer, default: nil
+  attr :sel_end, :integer, default: nil
+  attr :caption_match_idxs, :list, default: []
 
-  def frame_display(assigns) do
+  def filmstrip(assigns) do
     ~H"""
-    <div class="flex-1 p-6" phx-hook="FrameMultiSelect" id="frame-grid-container">
-      <!-- Loading State -->
-      <%= if @loading_frames do %>
-        <div class="flex items-center justify-center h-64">
-          <div class="flex items-center gap-3 text-gray-400">
-            <svg class="animate-spin h-6 w-6" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
-              </circle>
-              <path
-                class="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              >
-              </path>
-            </svg>
-            <span class="font-mono">Loading frames...</span>
-          </div>
+    <div
+      id="editor-filmstrip"
+      phx-hook="Filmstrip"
+      data-sel-start={@sel_start}
+      data-sel-end={@sel_end}
+    >
+      <div class="mx-auto max-w-7xl px-4 pt-4">
+        <div class="mb-1 flex items-center justify-between">
+          <span class="font-mono text-xs uppercase tracking-wider text-stone-500">Filmstrip</span>
+          <span :if={@frame_index != []} class="font-mono text-xs text-stone-400">
+            Frame {frame_number_at(@frame_index, @playhead)} / {@frame_count}
+          </span>
         </div>
-      <% else %>
-        <!-- Frame Grid -->
-        <%= if length(@current_frames) > 0 do %>
-          <!-- Context View Instructions -->
-          <%= if @is_context_view do %>
-            <div class="mb-6 p-4 bg-gray-700 rounded-lg border border-gray-600">
-              <h4 class="text-sm font-bold text-blue-400 mb-3 uppercase tracking-wide">
-                Context View Controls
-              </h4>
-              
-    <!-- Legend -->
-              <div class="flex flex-wrap gap-4 text-xs font-mono mb-4">
-                <div class="flex items-center gap-2">
-                  <div class="w-4 h-4 rounded border-2 border-yellow-500 bg-yellow-900/20"></div>
-                  <span class="text-gray-300">TARGET: Original search result</span>
-                </div>
-                <div class="flex items-center gap-2">
-                  <div class="w-4 h-4 rounded border-2 border-blue-500 bg-blue-900/20"></div>
-                  <span class="text-gray-300">BEFORE: Frames before target</span>
-                </div>
-                <div class="flex items-center gap-2">
-                  <div class="w-4 h-4 rounded border-2 border-green-500 bg-green-900/20"></div>
-                  <span class="text-gray-300">AFTER: Frames after target</span>
-                </div>
-              </div>
-              
-    <!-- Expand Controls -->
-              <div class="border-t border-gray-600 pt-3">
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-2">
-                    <button
-                      phx-click="expand_context_left"
-                      class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded font-mono text-xs transition-colors flex items-center gap-1"
-                      title="Add frames to the left"
-                    >
-                      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M12 6v6m0 0v6m0-6h6m-6 0H6"
-                        >
-                        </path>
-                      </svg>
-                      ← ADD
-                    </button>
 
-                    <span class="text-gray-400 text-xs font-mono">|</span>
-
-                    <button
-                      phx-click="expand_context_right"
-                      class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded font-mono text-xs transition-colors flex items-center gap-1"
-                      title="Add frames to the right"
-                    >
-                      ADD →
-                      <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M12 6v6m0 0v6m0-6h6m-6 0H6"
-                        >
-                        </path>
-                      </svg>
-                    </button>
-                  </div>
-
-                  <div class="flex items-center gap-2">
-                    <label class="text-xs text-gray-400 font-mono">Frames:</label>
-                    <input
-                      type="number"
-                      value={@expand_count}
-                      min="1"
-                      max="20"
-                      phx-change="update_expand_count"
-                      name="expand_count"
-                      class="w-16 bg-gray-600 border border-gray-500 text-white px-2 py-1 rounded font-mono text-xs focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-                </div>
-
-                <p class="text-xs text-gray-400 mt-2">
-                  💡 Expand context in either direction to fine-tune your GIF selection
-                </p>
-              </div>
-            </div>
-          <% end %>
-          
-    <!-- Caption Filter Instructions -->
-          <%= if @is_caption_filtered and not @is_context_view do %>
-            <div class="mb-6 p-4 bg-gray-700 rounded-lg border border-gray-600">
-              <h4 class="text-sm font-bold text-blue-400 mb-2 uppercase tracking-wide">
-                Caption Search Results
-              </h4>
-              <p class="text-xs text-gray-300 font-mono">
-                💡 Click any frame image (not the checkbox) to see 5 frames before and after for better GIF context
-              </p>
-            </div>
-          <% end %>
-
-          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-            <%= for {frame, index} <- Enum.with_index(@current_frames) do %>
-              <.frame_card
-                frame={frame}
-                index={index}
-                selected={index in @selected_frame_indices}
-                is_context_view={@is_context_view}
-                is_caption_filtered={@is_caption_filtered}
-              />
-            <% end %>
-          </div>
-          
-    <!-- Selection Info -->
-          <%= if length(@selected_frame_indices) > 0 do %>
-            <div class="mt-6 p-4 bg-blue-900/20 border border-blue-700 rounded-lg">
-              <div class="flex items-center justify-between">
-                <div class="text-blue-300 font-mono text-sm">
-                  {length(@selected_frame_indices)} frames selected
-                </div>
-              </div>
-            </div>
-          <% end %>
-        <% else %>
-          <!-- Empty State -->
-          <div class="flex items-center justify-center h-64">
-            <div class="text-center text-gray-400">
-              <svg
-                class="w-16 h-16 mx-auto mb-4 opacity-50"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M7 4V2a1 1 0 011-1h8a1 1 0 011 1v2h3a1 1 0 110 2h-1v12a3 3 0 01-3 3H7a3 3 0 01-3-3V6H3a1 1 0 110-2h4zM6 6v12a1 1 0 001 1h10a1 1 0 001-1V6H6z"
-                >
-                </path>
-              </svg>
-              <p class="font-mono">No frames found at this position</p>
-              <p class="text-sm mt-2">Try moving the timeline scrubber</p>
-            </div>
-          </div>
-        <% end %>
-      <% end %>
-    </div>
-    """
-  end
-
-  @doc """
-  Renders an individual frame card.
-  """
-  attr :frame, :map, required: true
-  attr :index, :integer, required: true
-  attr :selected, :boolean, default: false
-  attr :is_context_view, :boolean, default: false
-  attr :is_caption_filtered, :boolean, default: false
-
-  def frame_card(assigns) do
-    ~H"""
-    <div class={[
-      "relative bg-gray-800 rounded-lg overflow-hidden cursor-pointer transition-all duration-200 group frame-card",
-      get_frame_ring_class(@frame, @is_context_view, @selected)
-    ]}>
-      <!-- Mobile-friendly Selection Area with Multi-select Support -->
-      <div
-        id={"frame-selection-#{@index}"}
-        phx-click="select_frame"
-        phx-value-frame_index={@index}
-        phx-hook="FrameSelection"
-        data-frame-index={@index}
-        class="absolute inset-0 z-10 cursor-pointer touch-manipulation frame-selection-area"
-        style="touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none;"
-      >
-        <!-- Selection Checkbox -->
-        <div class="absolute top-2 left-2 pointer-events-none">
-          <div class={[
-            "w-8 h-8 rounded border-2 flex items-center justify-center transition-colors",
-            (@selected && "bg-blue-500 border-blue-500") || "bg-gray-700/90 border-gray-400"
-          ]}>
-            <%= if @selected do %>
-              <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fill-rule="evenodd"
-                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                  clip-rule="evenodd"
-                >
-                </path>
-              </svg>
-            <% end %>
-          </div>
-        </div>
-        
-    <!-- Modal trigger for non-caption views -->
-        <%= if not (@is_caption_filtered and not @is_context_view) do %>
-          <button
-            phx-click="show_frame_modal"
-            phx-value-frame_id={@frame.id}
-            class="absolute top-2 right-2 bg-gray-700/90 hover:bg-gray-600 text-white p-1 rounded text-xs font-mono transition-colors pointer-events-auto"
-            onclick="event.stopPropagation();"
+        <div
+          data-minimap
+          class="relative h-2 w-full cursor-pointer touch-none overflow-hidden rounded border border-stone-200 bg-stone-100"
+          aria-hidden="true"
+        >
+          <div
+            :if={@sel_start && @sel_end}
+            class="absolute inset-y-0 rounded bg-brand"
+            style={"left: #{pct(@sel_start, length(@frame_index))}%; width: #{max(pct(@sel_end - @sel_start + 1, length(@frame_index)), 0.5)}%"}
           >
-            🔍
-          </button>
-        <% end %>
+          </div>
+          <div
+            :for={idx <- @caption_match_idxs}
+            class="absolute inset-y-0 w-0.5 bg-amber-400"
+            style={"left: #{pct(idx, length(@frame_index))}%"}
+          >
+          </div>
+          <div
+            :if={@frame_index != []}
+            class="absolute inset-y-0 w-0.5 bg-stone-500"
+            style={"left: #{pct(@playhead, length(@frame_index))}%"}
+          >
+          </div>
+        </div>
       </div>
-      
-    <!-- Frame Image (no longer clickable separately) -->
-      <div class="w-full pointer-events-none">
-        <div class="aspect-video bg-gray-700 relative overflow-hidden">
-          <%= if @frame.image_data do %>
-            <img
-              src={"data:image/jpeg;base64,#{encode_frame_image(@frame.image_data)}"}
-              alt={"Frame ##{@frame.frame_number}"}
-              class="w-full h-full object-cover"
-            />
-          <% else %>
-            <div class="w-full h-full flex items-center justify-center text-gray-500">
-              <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                >
-                </path>
-              </svg>
+
+      <div
+        data-strip
+        class="mt-2 w-full overflow-x-auto border-y border-stone-200 bg-white"
+        style="touch-action: pan-x;"
+      >
+        <%= if @frame_index == [] do %>
+          <div class="flex h-20 items-center gap-px px-4">
+            <div :for={_i <- 1..10} class="h-16 w-28 shrink-0 animate-pulse rounded-sm bg-stone-200">
             </div>
-          <% end %>
-        </div>
-      </div>
-      
-    <!-- Context Type Indicator -->
-      <%= if @is_context_view and Map.has_key?(@frame, :context_type) do %>
-        <div class="absolute top-2 right-2 z-10">
-          <%= case @frame.context_type do %>
-            <% :target -> %>
-              <div class="bg-yellow-500 text-black text-xs font-bold px-2 py-1 rounded font-mono">
-                TARGET
-              </div>
-            <% :before -> %>
-              <div class="bg-blue-500 text-white text-xs font-bold px-2 py-1 rounded font-mono">
-                BEFORE
-              </div>
-            <% :after -> %>
-              <div class="bg-green-500 text-white text-xs font-bold px-2 py-1 rounded font-mono">
-                AFTER
-              </div>
-            <% _ -> %>
-          <% end %>
-        </div>
-      <% end %>
-      
-    <!-- Frame Info -->
-      <div class="p-3">
-        <div class="flex items-center justify-between">
-          <div class="text-white font-mono text-sm font-bold">
-            #{@frame.frame_number}
           </div>
-
-          <div class="text-gray-400 font-mono text-xs">
-            {format_timestamp(@frame.timestamp_ms)}
-          </div>
-        </div>
-
-        <%= if @frame.width != nil and @frame.height != nil do %>
-          <div class="text-gray-500 font-mono text-xs mt-1">
-            {@frame.width}×{@frame.height}
+        <% else %>
+          <div data-track class="flex h-20 w-max items-center">
+            <div
+              :for={{frame, idx} <- Enum.with_index(@frame_index)}
+              id={"strip-slot-#{frame.id}"}
+              data-slot-idx={idx}
+              data-frame-number={frame.frame_number}
+              class="relative h-16 w-28 shrink-0 cursor-pointer select-none border-r border-stone-200 bg-stone-100"
+              style="content-visibility: auto; contain-intrinsic-size: 112px 64px;"
+            >
+              <img
+                loading="lazy"
+                src={~p"/frame/#{frame.id}"}
+                alt={"Frame #{frame.frame_number}"}
+                class="pointer-events-none h-full w-full select-none object-cover"
+                draggable="false"
+              />
+              <div
+                :if={selected?(idx, @sel_start, @sel_end)}
+                class="pointer-events-none absolute inset-0 border-y-2 border-brand bg-brand/15"
+              >
+              </div>
+              <div
+                :if={idx == @playhead}
+                class="pointer-events-none absolute inset-y-0 left-0 w-0.5 bg-brand-deep"
+              >
+              </div>
+              <div
+                :if={idx == @sel_start && @sel_end}
+                data-handle="in"
+                class="absolute inset-y-0 left-0 z-10 flex w-11 cursor-ew-resize touch-none justify-start"
+                aria-label="Drag to adjust the start of the range"
+              >
+                <div class="h-full w-3 rounded-r bg-brand"></div>
+              </div>
+              <div
+                :if={idx == @sel_end && @sel_start}
+                data-handle="out"
+                class="absolute inset-y-0 right-0 z-10 flex w-11 cursor-ew-resize touch-none justify-end"
+                aria-label="Drag to adjust the end of the range"
+              >
+                <div class="h-full w-3 rounded-l bg-brand"></div>
+              </div>
+            </div>
           </div>
         <% end %>
-        
-    <!-- Caption Text Preview -->
-        <%= if Map.has_key?(@frame, :caption_texts) and @frame.caption_texts do %>
-          <div class="text-blue-300 font-mono text-xs mt-2 truncate" title={@frame.caption_texts}>
-            📝 {String.slice(@frame.caption_texts, 0, 30)}{if String.length(@frame.caption_texts) > 30,
-              do: "..."}
-          </div>
-        <% end %>
-      </div>
-      
-    <!-- Hover Overlay -->
-      <div class="absolute inset-0 bg-blue-500/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-      </div>
-      
-    <!-- Drag Selection Overlay -->
-      <div class="absolute inset-0 bg-blue-500/20 opacity-0 transition-opacity pointer-events-none drag-selection-overlay">
       </div>
     </div>
-
-    <style>
-      .frame-card.drag-selecting {
-        transform: scale(0.95);
-        box-shadow: 0 0 0 2px #3b82f6;
-      }
-
-      .frame-card.drag-selecting .drag-selection-overlay {
-        opacity: 1 !important;
-      }
-
-      /* Mobile Safari touch optimizations */
-      @media (hover: none) and (pointer: coarse) {
-        .frame-card {
-          -webkit-touch-callout: none;
-          -webkit-user-select: none;
-          -webkit-tap-highlight-color: transparent;
-          touch-action: manipulation;
-        }
-        
-        /* Larger touch targets on mobile */
-        .frame-card .absolute.inset-0 {
-          min-height: 44px; /* iOS recommended minimum touch target */
-        }
-        
-        /* Better visual feedback for touch */
-        .frame-card:active {
-          transform: scale(0.98);
-          transition: transform 0.1s ease;
-        }
-        
-        /* Ensure checkboxes are large enough for touch */
-        .frame-card .w-8.h-8 {
-          min-width: 32px;
-          min-height: 32px;
-        }
-      }
-
-      /* Prevent zoom on double tap for frame selection */
-      .frame-card {
-        touch-action: manipulation;
-      }
-
-      /* Tap feedback for mobile interactions */
-      .frame-card.tap-feedback {
-        transform: scale(0.95);
-        background-color: rgba(59, 130, 246, 0.2);
-        transition: transform 0.1s ease, background-color 0.1s ease;
-      }
-
-      .frame-card.long-press-feedback {
-        transform: scale(0.98);
-        background-color: rgba(34, 197, 94, 0.2);
-        box-shadow: 0 0 0 2px #22c55e;
-        transition: transform 0.1s ease, background-color 0.1s ease, box-shadow 0.1s ease;
-      }
-    </style>
     """
   end
 
-  # Helper functions
+  defp selected?(_idx, nil, _sel_end), do: false
+  defp selected?(_idx, _sel_start, nil), do: false
+  defp selected?(idx, sel_start, sel_end), do: idx >= sel_start and idx <= sel_end
 
-  defp get_frame_ring_class(frame, is_context_view, selected) do
-    cond do
-      selected ->
-        "ring-2 ring-blue-500 bg-blue-900/20 hover:ring-2 hover:ring-blue-500"
-
-      is_context_view and Map.has_key?(frame, :context_type) ->
-        case frame.context_type do
-          :target -> "ring-2 ring-yellow-500 bg-yellow-900/20 hover:ring-2 hover:ring-yellow-400"
-          :before -> "ring-2 ring-blue-500 bg-blue-900/20 hover:ring-2 hover:ring-blue-400"
-          :after -> "ring-2 ring-green-500 bg-green-900/20 hover:ring-2 hover:ring-green-400"
-          _ -> "hover:ring-2 hover:ring-blue-500"
-        end
-
-      true ->
-        "hover:ring-2 hover:ring-blue-500"
+  defp frame_number_at(frame_index, playhead) do
+    case Enum.at(frame_index, playhead) do
+      nil -> "-"
+      frame -> frame.frame_number
     end
   end
 
-  defp format_timestamp(nil), do: "0:00"
-
-  defp format_timestamp(ms) when is_integer(ms) do
-    total_seconds = div(ms, 1000)
-    minutes = div(total_seconds, 60)
-    seconds = rem(total_seconds, 60)
-    "#{minutes}:#{String.pad_leading(to_string(seconds), 2, "0")}"
-  end
-
-  defp encode_frame_image(nil), do: ""
-
-  defp encode_frame_image(hex_data) when is_binary(hex_data) do
-    case String.starts_with?(hex_data, "\\x") do
-      true ->
-        hex_string = String.slice(hex_data, 2..-1//1)
-
-        case Base.decode16(hex_string, case: :lower) do
-          {:ok, binary_data} -> Base.encode64(binary_data)
-          :error -> ""
-        end
-
-      false ->
-        Base.encode64(hex_data)
-    end
-  end
+  defp pct(_value, 0), do: 0.0
+  defp pct(value, count), do: Float.round(value / count * 100, 3)
 end

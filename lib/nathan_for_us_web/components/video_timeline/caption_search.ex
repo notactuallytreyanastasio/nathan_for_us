@@ -1,158 +1,94 @@
 defmodule NathanForUsWeb.Components.VideoTimeline.CaptionSearch do
   @moduledoc """
-  Caption search component for video timeline pages.
+  Caption search for the GIF editor.
 
-  Provides caption search functionality segmented to a specific video with autocomplete.
+  Search runs asynchronously (the LiveView assigns a loading state, then
+  executes the query in `handle_info`) and results render as a dropdown of
+  `mm:ss — "caption"` rows. Clicking a result moves the playhead and scrolls
+  the filmstrip; matches also show as amber ticks on the minimap.
   """
 
   use NathanForUsWeb, :html
 
-  @doc """
-  Renders the caption search interface for a specific video.
-  """
   attr :search_term, :string, default: ""
   attr :loading, :boolean, default: false
-  attr :video_id, :integer, required: true
-  attr :autocomplete_suggestions, :list, default: []
-  attr :show_autocomplete, :boolean, default: false
-  attr :search_form, :map, default: %{}
-  attr :is_filtered, :boolean, default: false
-  attr :is_context_view, :boolean, default: false
-  attr :context_target_frame, :map, default: nil
-  attr :expand_count, :integer, default: 3
+  attr :results, :list, default: [], doc: "maps with :frame_number, :timestamp_ms, :text"
+  attr :result_count, :integer, default: 0
+  attr :results_open, :boolean, default: false
+  attr :searched, :boolean, default: false
+  attr :has_captions, :boolean, default: true
 
   def caption_search(assigns) do
     ~H"""
-    <div class="bg-gray-800 border border-gray-600 rounded-lg p-4 mb-4">
-      <div class="flex items-center justify-between mb-3">
-        <div class="text-xs text-blue-400 uppercase tracking-wide font-mono">
-          <%= if @is_context_view do %>
-            CONTEXT VIEW
-          <% else %>
-            CAPTION SEARCH
-          <% end %>
-        </div>
-        <div class="flex items-center gap-2">
-          <%= cond do %>
-            <% @is_context_view -> %>
-              <button
-                phx-click="back_to_search_results"
-                class="text-xs text-green-400 hover:text-green-300 font-mono underline"
-              >
-                ← Back to Results
-              </button>
-              <button
-                phx-click="clear_caption_filter"
-                class="text-xs text-yellow-400 hover:text-yellow-300 font-mono underline"
-              >
-                Clear All
-              </button>
-            <% @is_filtered -> %>
-              <button
-                phx-click="clear_caption_filter"
-                class="text-xs text-yellow-400 hover:text-yellow-300 font-mono underline"
-              >
-                Clear Filter
-              </button>
-            <% true -> %>
-              <div class="text-xs text-gray-400 font-mono">Video-specific search</div>
-          <% end %>
-        </div>
-      </div>
-
-      <%= if @is_context_view and @context_target_frame do %>
-        <div class="mb-3 p-2 bg-gray-700 rounded text-xs text-gray-300 font-mono">
-          Showing context around frame #{@context_target_frame.frame_number}
-          <span class="text-blue-400">({format_timestamp(@context_target_frame.timestamp_ms)})</span>
-        </div>
-      <% end %>
-
-      <.caption_search_form
-        search_term={@search_term}
-        search_form={@search_form}
-        loading={@loading}
-        autocomplete_suggestions={@autocomplete_suggestions}
-        show_autocomplete={@show_autocomplete}
-      />
-    </div>
-    """
-  end
-
-  @doc """
-  Renders the caption search form with autocomplete.
-  """
-  attr :search_term, :string, required: true
-  attr :search_form, :map, required: true
-  attr :loading, :boolean, required: true
-  attr :autocomplete_suggestions, :list, default: []
-  attr :show_autocomplete, :boolean, default: false
-
-  def caption_search_form(assigns) do
-    ~H"""
-    <div class="relative">
-      <.form for={@search_form} as={:caption_search} phx-submit="caption_search">
-        <div class="flex gap-2">
-          <div class="relative flex-1">
-            <input
-              type="text"
-              name="caption_search[term]"
-              value={@search_term}
-              placeholder="Search captions in this video..."
-              class="w-full bg-gray-700 border border-gray-600 text-white px-4 py-3 rounded font-mono placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-              phx-change="caption_autocomplete"
-              phx-debounce="150"
-              autocomplete="off"
-            />
-
-            <.caption_autocomplete_dropdown
-              :if={@show_autocomplete and length(@autocomplete_suggestions) > 0}
-              suggestions={@autocomplete_suggestions}
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={@loading}
-            class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white px-6 py-3 rounded font-mono text-sm transition-colors whitespace-nowrap"
+    <div class="mx-auto w-full max-w-7xl px-4 pt-4">
+      <%= if @has_captions do %>
+        <form phx-change="caption_search_change" phx-submit="caption_search" class="relative max-w-xl">
+          <label for="caption-search-input" class="sr-only">Search captions</label>
+          <span class="hero-magnifying-glass-mini pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-stone-400">
+          </span>
+          <input
+            type="text"
+            id="caption-search-input"
+            name="caption_search[term]"
+            value={@search_term}
+            placeholder="Search captions in this video…"
+            class="input pl-9 pr-9"
+            phx-debounce="300"
+            autocomplete="off"
+          />
+          <div
+            :if={@loading}
+            class="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-stone-300 border-t-brand"
           >
-            {if @loading, do: "SEARCHING", else: "SEARCH"}
+          </div>
+          <button
+            :if={@searched and not @loading}
+            type="button"
+            phx-click="clear_caption_search"
+            class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-700"
+            aria-label="Clear caption search"
+          >
+            <span class="hero-x-mark-mini size-4"></span>
           </button>
-        </div>
-      </.form>
-    </div>
-    """
-  end
 
-  @doc """
-  Renders the caption autocomplete dropdown.
-  """
-  attr :suggestions, :list, required: true
-
-  def caption_autocomplete_dropdown(assigns) do
-    ~H"""
-    <div
-      class="absolute top-full left-0 right-0 z-50 bg-gray-700 border border-gray-600 border-t-0 rounded-b-lg shadow-lg max-h-48 overflow-y-auto"
-      phx-click-away="hide_caption_autocomplete"
-    >
-      <div class="text-xs text-gray-400 px-3 py-1 bg-gray-800 border-b border-gray-600 font-mono">
-        SUGGESTED CAPTIONS
-      </div>
-      <%= for suggestion <- @suggestions do %>
-        <button
-          type="button"
-          phx-click="select_caption_suggestion"
-          phx-value-suggestion={suggestion}
-          class="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-gray-600 hover:text-blue-300 font-mono border-b border-gray-600 last:border-b-0 truncate"
-          title={suggestion}
-        >
-          {suggestion}
-        </button>
+          <div
+            :if={@results_open and @searched and not @loading}
+            class="absolute left-0 right-0 top-full z-40 mt-1 max-h-72 overflow-y-auto rounded-lg border border-stone-200 bg-white shadow-lg"
+            phx-click-away="close_caption_results"
+          >
+            <%= if @results == [] do %>
+              <p class="px-3 py-4 text-center font-mono text-sm text-stone-500">
+                No captions match — try fewer words
+              </p>
+            <% else %>
+              <div class="border-b border-stone-200 bg-stone-50 px-3 py-1 font-mono text-xs uppercase tracking-wider text-stone-500">
+                {@result_count} {if @result_count == 1, do: "match", else: "matches"}
+              </div>
+              <button
+                :for={result <- @results}
+                type="button"
+                phx-click="jump_to_frame"
+                phx-value-frame_number={result.frame_number}
+                class="flex w-full items-baseline gap-3 border-b border-stone-100 px-3 py-2 text-left last:border-b-0 hover:bg-stone-100"
+              >
+                <span class="shrink-0 font-mono text-xs text-stone-400">
+                  {format_timestamp(result.timestamp_ms)}
+                </span>
+                <span class="truncate text-sm text-stone-700">"{result.text}"</span>
+              </button>
+            <% end %>
+          </div>
+        </form>
+      <% else %>
+        <p class="font-mono text-xs uppercase tracking-wider text-stone-500">
+          Caption search
+          <span class="normal-case tracking-normal text-stone-400">— no captions for this video</span>
+        </p>
       <% end %>
     </div>
     """
   end
 
-  # Helper function to format timestamp
   defp format_timestamp(nil), do: "0:00"
 
   defp format_timestamp(ms) when is_integer(ms) do

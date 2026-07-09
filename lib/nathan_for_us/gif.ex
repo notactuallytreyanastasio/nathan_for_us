@@ -41,13 +41,21 @@ defmodule NathanForUs.Gif do
 
   @doc """
   Generate a hash for a set of frames from a video.
+
+  An optional `fps` distinguishes renders of the same frames at different
+  playback speeds so each speed gets its own dedup entry. Passing `nil`
+  (the default) keeps the legacy hash for existing callers and stored rows.
   """
-  def generate_hash(video_id, frame_ids) when is_list(frame_ids) do
+  def generate_hash(video_id, frame_ids, fps \\ nil) when is_list(frame_ids) do
     # Sort frame IDs to ensure consistent hashing regardless of selection order
     sorted_frame_ids = Enum.sort(frame_ids)
 
     # Create a string representation to hash
-    hash_string = "#{video_id}:#{Enum.join(sorted_frame_ids, ",")}"
+    hash_string =
+      case fps do
+        nil -> "#{video_id}:#{Enum.join(sorted_frame_ids, ",")}"
+        fps -> "#{video_id}:#{Enum.join(sorted_frame_ids, ",")}@#{fps}fps"
+      end
 
     # Generate SHA256 hash
     :crypto.hash(:sha256, hash_string)
@@ -75,7 +83,7 @@ defmodule NathanForUs.Gif do
         # Not in cache, store it for future access
         NathanForUs.GifCache.put(gif_id, gif_data)
         Base.encode64(gif_data)
-      
+
       cached_data ->
         # Got it from cache
         Base.encode64(cached_data)
@@ -93,11 +101,12 @@ defmodule NathanForUs.Gif do
 
   @doc """
   Find or create a GIF for the given frames.
-  Returns {:ok, gif} if found, or {:generate, hash} if needs to be generated.
+  Returns {:ok, gif} if found, or {:generate, hash, frame_ids} if it needs
+  to be generated. Pass an `fps` to key the lookup per playback speed.
   """
-  def find_or_prepare(video_id, frames) when is_list(frames) do
+  def find_or_prepare(video_id, frames, fps \\ nil) when is_list(frames) do
     frame_ids = Enum.map(frames, & &1.id)
-    hash = generate_hash(video_id, frame_ids)
+    hash = generate_hash(video_id, frame_ids, fps)
 
     case find_by_hash(hash) do
       nil ->
@@ -125,12 +134,12 @@ defmodule NathanForUs.Gif do
       {:ok, gif} = result ->
         # Cache the GIF data immediately
         NathanForUs.GifCache.put(gif.id, gif_binary, byte_size(gif_binary))
-        
+
         # Record frame usage to boost their cache priority
         NathanForUs.Video.record_frames_gif_usage(frame_ids)
-        
+
         result
-        
+
       error ->
         error
     end
@@ -146,7 +155,7 @@ defmodule NathanForUs.Gif do
         # Not in cache, store it for future access
         NathanForUs.GifCache.put(gif_id, gif_data)
         Base.encode64(gif_data)
-      
+
       cached_data ->
         # Got it from cache
         Base.encode64(cached_data)

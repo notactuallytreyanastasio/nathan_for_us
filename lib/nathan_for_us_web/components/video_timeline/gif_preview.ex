@@ -1,262 +1,221 @@
 defmodule NathanForUsWeb.Components.VideoTimeline.GifPreview do
   @moduledoc """
-  GIF preview component for selected frames on timeline.
-  Shows a cycling preview of selected frames to simulate GIF playback.
+  Stage (live looping preview) and generation panel for the GIF editor.
+
+  The stage cycles through `GET /frame/:id` URLs client-side via the
+  `RangePreview` JS hook — no frame binaries ever cross the websocket.
+  The generation panel renders the encoding spinner, the failure alert,
+  and the result card (GIF served via `GET /gif/:id`).
   """
 
   use NathanForUsWeb, :html
 
   @doc """
-  Renders a GIF preview of selected frames.
+  Live preview stage: checkerboard media well, current-frame caption,
+  play/pause, fps segmented control, and selection readout.
   """
-  attr :current_frames, :list, required: true
-  attr :selected_frame_indices, :list, required: true
-  attr :gif_generation_status, :atom, default: nil
-  attr :generated_gif_data, :string, default: nil
-  attr :is_admin, :boolean, default: false
-  attr :gif_cache_status, :string, default: nil
-  attr :gif_from_cache, :boolean, default: false
-  attr :current_user, :map, default: nil
-  attr :video_id, :integer, default: nil
-  attr :selected_frame_captions, :list, default: []
+  attr :preview_frames, :list, required: true, doc: "maps with :id, :url, :caption"
+  attr :fps, :integer, required: true
+  attr :has_range, :boolean, required: true
+  attr :readout, :string, default: nil
 
-  def gif_preview(assigns) do
-    # Get selected frames based on indices
-    selected_frames =
-      assigns.selected_frame_indices
-      |> Enum.map(&Enum.at(assigns.current_frames, &1))
-      |> Enum.reject(&is_nil/1)
-
-    assigns = assign(assigns, :selected_frames, selected_frames)
-
+  def stage(assigns) do
     ~H"""
-    <%= if length(@selected_frames) > 1 do %>
-      <div class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-bold font-mono text-white">
-            <%= if @gif_generation_status == :completed do %>
-              Generated GIF
-            <% else %>
-              GIF Preview
-            <% end %>
-          </h3>
-          <div class="text-sm font-mono text-gray-400">
-            {length(@selected_frames)} frames selected
-          </div>
+    <div class="mx-auto w-full max-w-4xl px-4 pt-6">
+      <div
+        id="stage-preview"
+        phx-hook="RangePreview"
+        data-frames={Jason.encode!(@preview_frames)}
+        data-fps={@fps}
+      >
+        <div class="checkerboard flex min-h-[16rem] items-center justify-center overflow-hidden rounded-xl border border-stone-200">
+          <%= if @preview_frames == [] do %>
+            <p class="font-mono text-sm text-stone-500">No frames to preview yet</p>
+          <% else %>
+            <img
+              data-preview-img
+              src={hd(@preview_frames).url}
+              alt="Frame preview"
+              class="max-h-[60vh] w-auto max-w-full"
+            />
+          <% end %>
         </div>
 
-        <div class="flex justify-center">
-          <%= if @gif_generation_status == :completed do %>
-            <!-- Show generated GIF -->
-            <div class="relative bg-gray-900 rounded-lg overflow-hidden border border-gray-600">
-              <img
-                src={"data:image/gif;base64,#{@generated_gif_data}"}
-                alt="Generated GIF"
-                class="max-w-full max-h-96 rounded"
-              />
-            </div>
-          <% else %>
-            <!-- Show preview -->
-            <div
-              id="gif-preview-container"
-              phx-hook="GifPreview"
-              data-frames={
-                Jason.encode!(encode_frames_with_captions(@selected_frames, @selected_frame_captions))
+        <p data-preview-caption class="mt-3 min-h-[3rem] text-center text-stone-700">
+          {first_caption(@preview_frames)}
+        </p>
+
+        <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+          <button
+            type="button"
+            data-play-toggle
+            disabled={not @has_range}
+            class="btn-ghost"
+            title="Play/pause (Space)"
+            aria-label="Play or pause the preview"
+          >
+            <span data-icon-pause class="hero-pause-mini size-5"></span>
+            <span data-icon-play class="hero-play-mini hidden size-5"></span>
+          </button>
+
+          <div
+            class="inline-flex rounded-lg border border-stone-200 bg-stone-100 p-1 font-mono text-sm"
+            role="group"
+            aria-label="Playback speed"
+          >
+            <button
+              :for={fps <- [5, 10, 15]}
+              type="button"
+              phx-click="set_fps"
+              phx-value-fps={fps}
+              aria-pressed={to_string(@fps == fps)}
+              class={
+                if @fps == fps,
+                  do: "rounded-md bg-white px-3 py-1.5 text-stone-900 shadow-sm",
+                  else: "px-3 py-1.5 text-stone-500 hover:text-stone-800"
               }
-              class="relative bg-gray-900 rounded-lg overflow-hidden border border-gray-600"
-              style="width: 400px; height: 225px;"
             >
-              <!-- Preview frame will be displayed here by the hook -->
-              <div class="absolute inset-0 flex items-center justify-center">
-                <div class="text-gray-500 font-mono text-sm">Loading preview...</div>
-              </div>
-              
-    <!-- Frame counter overlay -->
-              <div class="absolute bottom-2 right-2 bg-black/70 text-white px-2 py-1 rounded text-xs font-mono">
-                <span id="frame-counter">1 / {length(@selected_frames)}</span>
-              </div>
-              
-    <!-- Play/pause controls -->
-              <div class="absolute bottom-2 left-2 flex gap-2">
-                <button
-                  id="gif-play-pause"
-                  class="bg-black/70 text-white px-2 py-1 rounded text-xs font-mono hover:bg-black/90"
-                >
-                  Pause
-                </button>
-                <select
-                  id="gif-speed"
-                  class="bg-black/70 text-white px-1 py-1 rounded text-xs font-mono"
-                >
-                  <option value="200">Slow</option>
-                  <option value="150" selected>Normal</option>
-                  <option value="100">Fast</option>
-                  <option value="50">Very Fast</option>
-                </select>
-              </div>
-            </div>
-          <% end %>
-        </div>
-        
-    <!-- Caption Display Area -->
-        <%= if length(@selected_frames) > 0 do %>
-          <div class="mt-4 max-w-2xl mx-auto">
-            <div class="bg-gray-800 border border-gray-600 rounded-lg p-4">
-              <div class="flex items-center justify-between mb-3">
-                <h4 class="text-sm font-bold text-blue-400 uppercase tracking-wide font-mono">
-                  Live Captions
-                </h4>
-                <select
-                  id="caption-speed"
-                  class="bg-gray-700 border border-gray-600 text-white px-2 py-1 rounded text-xs font-mono"
-                >
-                  <option value="1200">Slow</option>
-                  <option value="800" selected>Normal</option>
-                  <option value="500">Fast</option>
-                  <option value="300">Very Fast</option>
-                </select>
-              </div>
-              <div
-                id="animated-captions"
-                class="min-h-[60px] bg-gray-900 rounded-lg p-3 border border-gray-700"
-              >
-                <div class="text-gray-300 text-sm leading-relaxed font-mono">
-                  <span id="current-caption">Click play to see captions...</span>
-                </div>
-              </div>
-              <div class="text-xs text-gray-500 mt-2 font-mono text-center">
-                Captions don't sync with the frame animation above - they just cycle through
-              </div>
-            </div>
+              {fps} fps
+            </button>
           </div>
-        <% end %>
 
-        <div class="mt-4 text-center">
-          <%= if @gif_generation_status == :completed do %>
-            <!-- Download, post, and reset buttons -->
-            <div class="flex justify-center gap-4 flex-wrap">
-              <a
-                href={"data:image/gif;base64,#{@generated_gif_data}"}
-                download="framecut.gif"
-                class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-mono text-sm transition-colors"
-              >
-                Download GIF
-              </a>
-
-              <%= if @current_user do %>
-                <button
-                  phx-click="post_to_timeline"
-                  class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded font-mono text-sm transition-colors"
-                >
-                  Post to public timeline
-                </button>
-              <% else %>
-                <.link
-                  navigate={~p"/users/register"}
-                  class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded font-mono text-sm transition-colors"
-                >
-                  Sign Up to Post
-                </.link>
-              <% end %>
-
-              <button
-                phx-click="reset_gif_generation"
-                class="bg-gray-600 hover:bg-gray-700 text-white px-6 py-2 rounded font-mono text-sm transition-colors"
-              >
-                New Preview
-              </button>
-            </div>
-            
-    <!-- Admin-only cache status -->
-            <%= if @is_admin and @gif_cache_status do %>
-              <div class="mt-4 p-3 bg-yellow-900/30 border border-yellow-600/50 rounded-lg">
-                <div class="flex items-center justify-center gap-2 mb-2">
-                  <span class="text-yellow-400 font-mono text-xs font-bold">⚡ ADMIN DEBUG</span>
-                  <%= if @gif_from_cache do %>
-                    <span class="bg-green-600 text-white px-2 py-1 rounded text-xs font-mono">
-                      CACHED
-                    </span>
-                  <% else %>
-                    <span class="bg-blue-600 text-white px-2 py-1 rounded text-xs font-mono">
-                      FRESH
-                    </span>
-                  <% end %>
-                </div>
-                <p class="text-yellow-300 text-xs font-mono text-center">
-                  {@gif_cache_status}
-                </p>
-                <div class="text-center mt-2">
-                  <span class="text-yellow-400 text-xs font-mono">
-                    Cache Hit Rate: High traffic GIFs will load instantly
-                  </span>
-                </div>
-              </div>
-            <% end %>
-          <% else %>
-            <!-- Generation buttons and status -->
-            <%= if @gif_generation_status == :generating do %>
-              <div class="flex items-center justify-center gap-2">
-                <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-400"></div>
-                <p class="text-sm text-blue-400 font-mono">Generating GIF...</p>
-              </div>
-            <% else %>
-              <div class="flex justify-center">
-                <button
-                  phx-click="generate_timeline_gif_server"
-                  class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-mono text-sm transition-colors"
-                >
-                  Generate GIF
-                </button>
-              </div>
-              <p class="text-sm text-gray-400 font-mono mt-2">
-                Preview shows how your selected frames will look as a GIF
-              </p>
-            <% end %>
-          <% end %>
+          <p :if={@readout} class="font-mono text-sm text-stone-500">{@readout}</p>
         </div>
+
+        <p :if={not @has_range} class="mt-2 text-center font-mono text-xs text-stone-500">
+          Drag across the filmstrip or press I / O to set a range
+        </p>
       </div>
-    <% end %>
+    </div>
     """
   end
 
-  # Helper function to encode frames with captions for JavaScript
-  defp encode_frames_with_captions(frames, frame_captions) do
-    # Create a lookup map for captions by frame_id
-    captions_by_frame_id =
-      frame_captions
-      |> Enum.into(%{}, fn caption_data ->
-        {caption_data.frame_id, caption_data.captions}
-      end)
+  @doc """
+  Generation status panel: encoding spinner, failure alert with retry,
+  or the result card with download / copy link / post-to-timeline actions.
+  """
+  attr :status, :atom, required: true, doc: ":generating, :failed or :completed"
+  attr :generating_frame_count, :integer, default: 0
+  attr :error_message, :string, default: nil
+  attr :gif_id, :integer, default: nil
+  attr :fallback_base64, :string, default: nil, doc: "only set when the DB save failed"
+  attr :browseable_gif_id, :integer, default: nil
+  attr :posted, :boolean, default: false
+  attr :show_post_form, :boolean, default: false
+  attr :post_title, :string, default: ""
+  attr :post_error, :string, default: nil
+  attr :current_user, :map, default: nil
 
-    frames
-    |> Enum.map(fn frame ->
-      captions = Map.get(captions_by_frame_id, frame.id, [])
-      caption_text = if Enum.empty?(captions), do: "", else: Enum.join(captions, " ")
+  def generation_panel(assigns) do
+    ~H"""
+    <div class="mx-auto w-full max-w-4xl px-4 pt-4">
+      <%= case @status do %>
+        <% :generating -> %>
+          <div class="card flex items-center gap-3 p-4">
+            <div class="h-4 w-4 animate-spin rounded-full border-2 border-stone-300 border-t-brand">
+            </div>
+            <p class="font-mono text-sm text-stone-700">
+              Encoding {@generating_frame_count} frames…
+            </p>
+          </div>
+        <% :failed -> %>
+          <div class="rounded-xl border border-red-200 bg-red-50 p-4">
+            <div class="flex items-start gap-2">
+              <span class="hero-exclamation-circle-mini mt-0.5 size-5 shrink-0 text-red-500"></span>
+              <div>
+                <p class="font-mono text-sm font-medium text-red-700">GIF generation failed</p>
+                <p :if={@error_message} class="mt-1 text-xs text-red-600">{@error_message}</p>
+              </div>
+            </div>
+            <button type="button" phx-click="generate_gif" class="btn-secondary mt-3">
+              Try again
+            </button>
+          </div>
+        <% :completed -> %>
+          <div class="card p-4">
+            <div class="mb-2 font-mono text-xs uppercase tracking-wider text-stone-500">
+              Your GIF
+            </div>
 
-      %{
-        id: frame.id,
-        frame_number: frame.frame_number,
-        timestamp_ms: frame.timestamp_ms,
-        image_data: encode_frame_image(frame.image_data),
-        caption: caption_text
-      }
-    end)
+            <div class="checkerboard flex justify-center overflow-hidden rounded-xl border border-stone-200 p-2">
+              <%= if @gif_id do %>
+                <img src={~p"/gif/#{@gif_id}"} alt="Generated GIF" class="max-h-96 max-w-full" />
+              <% else %>
+                <img
+                  src={"data:image/gif;base64,#{@fallback_base64}"}
+                  alt="Generated GIF"
+                  class="max-h-96 max-w-full"
+                />
+              <% end %>
+            </div>
+
+            <div class="mt-4 flex flex-wrap items-center gap-2">
+              <%= if @gif_id do %>
+                <a href={~p"/gif/#{@gif_id}?download=1"} class="btn-secondary">
+                  <span class="hero-arrow-down-tray-mini size-4"></span> Download
+                </a>
+                <button type="button" class="btn-secondary" data-copy={url(~p"/gif/#{@gif_id}")}>
+                  Copy GIF link
+                </button>
+              <% else %>
+                <a
+                  href={"data:image/gif;base64,#{@fallback_base64}"}
+                  download="framecut.gif"
+                  class="btn-secondary"
+                >
+                  <span class="hero-arrow-down-tray-mini size-4"></span> Download
+                </a>
+                <p class="font-mono text-xs text-amber-700">
+                  Saving failed — this GIF can't be linked or posted
+                </p>
+              <% end %>
+
+              <%= cond do %>
+                <% @posted && @browseable_gif_id -> %>
+                  <.link navigate={~p"/timeline?gif_id=#{@browseable_gif_id}"} class="btn-secondary">
+                    <span class="hero-check-circle-mini size-4 text-emerald-500"></span>
+                    Posted — view timeline
+                  </.link>
+                <% is_nil(@current_user) -> %>
+                  <.link :if={@gif_id} navigate={~p"/users/register"} class="btn-secondary">
+                    Sign up to post
+                  </.link>
+                <% @show_post_form -> %>
+                  <form phx-submit="post_to_timeline" class="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      name="post[title]"
+                      value={@post_title}
+                      maxlength="120"
+                      placeholder="Title (optional)"
+                      class="input w-64"
+                      autocomplete="off"
+                    />
+                    <button type="submit" class="btn-secondary">Post</button>
+                    <button type="button" phx-click="cancel_post_form" class="btn-ghost">
+                      Cancel
+                    </button>
+                  </form>
+                <% true -> %>
+                  <button
+                    :if={@browseable_gif_id}
+                    type="button"
+                    phx-click="open_post_form"
+                    class="btn-secondary"
+                  >
+                    Post to timeline
+                  </button>
+              <% end %>
+            </div>
+
+            <p :if={@post_error} class="mt-2 font-mono text-xs text-red-600">{@post_error}</p>
+          </div>
+        <% _ -> %>
+      <% end %>
+    </div>
+    """
   end
 
-  defp encode_frame_image(nil), do: ""
-
-  defp encode_frame_image(hex_data) when is_binary(hex_data) do
-    case String.starts_with?(hex_data, "\\x") do
-      true ->
-        hex_string = String.slice(hex_data, 2..-1//1)
-
-        case Base.decode16(hex_string, case: :lower) do
-          {:ok, binary_data} -> Base.encode64(binary_data)
-          :error -> ""
-        end
-
-      false ->
-        Base.encode64(hex_data)
-    end
-  end
+  defp first_caption([]), do: ""
+  defp first_caption([frame | _]), do: frame.caption || ""
 end

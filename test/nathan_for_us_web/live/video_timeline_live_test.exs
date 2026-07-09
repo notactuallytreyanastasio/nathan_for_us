@@ -3,379 +3,231 @@ defmodule NathanForUsWeb.VideoTimelineLiveTest do
 
   import Phoenix.LiveViewTest
 
-  alias NathanForUs.{Repo, Accounts}
+  alias NathanForUs.{Accounts, Repo}
   alias NathanForUs.Video.Video, as: VideoSchema
   alias NathanForUs.Video.VideoFrame
-  alias NathanForUs.Gif
 
   setup do
-    # Create test users
-    {:ok, admin_user} = create_admin_user()
     {:ok, regular_user} = create_regular_user()
-
-    # Create test video with frames
     {:ok, video} = create_test_video()
     frames = create_test_frames(video, 50)
+    {:ok, caption} = create_test_caption(video)
 
-    # Create some test GIFs for caching tests
-    {:ok, cached_gif} = create_test_gif(video, frames)
-
-    %{
-      admin_user: admin_user,
-      regular_user: regular_user,
-      video: video,
-      frames: frames,
-      cached_gif: cached_gif
-    }
+    %{regular_user: regular_user, video: video, frames: frames, caption: caption}
   end
 
-  describe "mount and basic functionality" do
+  describe "mount and basic rendering" do
     test "mounts successfully with valid video ID", %{conn: conn, video: video} do
       {:ok, _view, html} = live(conn, "/video/#{video.id}")
 
       assert html =~ video.title
-      assert html =~ "Timeline Browser"
       assert html =~ "frames"
+      assert html =~ "GENERATE GIF"
     end
 
     test "redirects with error for invalid video ID", %{conn: conn} do
-      assert {:error,
-              {:redirect, %{to: "/", flash: %{"error" => "Video not found"}}}} =
+      assert {:error, {:redirect, %{to: "/", flash: %{"error" => "Video not found"}}}} =
                live(conn, "/video/99999")
     end
 
     test "redirects with error for non-integer video ID", %{conn: conn} do
-      assert {:error,
-              {:redirect, %{to: "/", flash: %{"error" => "Invalid video ID"}}}} =
+      assert {:error, {:redirect, %{to: "/", flash: %{"error" => "Invalid video ID"}}}} =
                live(conn, "/video/invalid")
     end
 
-    test "displays navigation links", %{conn: conn, video: video} do
-      {:ok, _view, html} = live(conn, "/video/#{video.id}")
-
-      assert html =~ "Back to search"
-      assert html =~ "TIMELINE"
-      assert html =~ "BROWSE GIFS"
-      assert html =~ "Random GIF"
-    end
-
-    test "shows tutorial for first-time visitors", %{conn: conn, video: video} do
+    test "renders the editor hooks and filmstrip", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Check if tutorial hook is present
-      assert has_element?(view, "#timeline-container[phx-hook='TimelineTutorial']")
+      assert has_element?(view, "#editor-root[phx-hook='KeyboardShortcuts']")
+      assert has_element?(view, "#editor-filmstrip[phx-hook='Filmstrip']")
+      assert has_element?(view, "#stage-preview[phx-hook='RangePreview']")
+    end
+
+    test "sets page title to the edit form", %{conn: conn, video: video} do
+      {:ok, view, _html} = live(conn, "/video/#{video.id}")
+
+      assert page_title(view) =~ "Edit"
     end
   end
 
-  describe "random GIF generation with URL parameters" do
-    test "handles random=true with valid parameters", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?random=true&start_frame=10&selected_indices=0,1,2,3,4"
-      {:ok, view, _html} = live(conn, url)
+  describe "playhead" do
+    test "clicking a frame sets the playhead", %{conn: conn, video: video} do
+      {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Should be in random selection mode
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.is_random_selection == true
-      assert state.random_start_frame == 10
-      assert state.selected_frame_indices == [0, 1, 2, 3, 4]
-    end
-
-    test "handles URL-encoded comma parameters correctly", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?random=true&start_frame=5&selected_indices=0%2C1%2C2%2C3"
-      {:ok, view, _html} = live(conn, url)
+      render_hook(view, "set_playhead", %{"frame_number" => 10})
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.selected_frame_indices == [0, 1, 2, 3]
+      # frame numbers start at 1, so frame 10 is index 9
+      assert state.playhead == 9
     end
 
-    test "shows error for invalid random parameters", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?random=true&start_frame=invalid&selected_indices=0,1,2"
-      {:ok, _view, html} = live(conn, url)
+    test "move_playhead moves by delta and clamps at bounds", %{conn: conn, video: video} do
+      {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      assert html =~ "Invalid random parameters"
-    end
+      render_hook(view, "move_playhead", %{"delta" => 5})
+      assert :sys.get_state(view.pid).socket.assigns.playhead == 5
 
-    test "automatically checks for existing cached GIF", %{conn: conn, video: video} do
-      # This would require a GIF to exist in the database with specific frames
-      url = "/video/#{video.id}?random=true&start_frame=1&selected_indices=0,1,2,3,4"
-      {:ok, view, _html} = live(conn, url)
+      render_hook(view, "move_playhead", %{"delta" => -100})
+      assert :sys.get_state(view.pid).socket.assigns.playhead == 0
 
-      # Wait for auto-check to complete
-      :sys.get_state(view.pid)
-
-      # Should either show cached GIF or preview
-      html = render(view)
-      assert html =~ "GIF Preview" or html =~ "Generated GIF"
-    end
-
-    test "shows random selection controls when in random mode", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?random=true&start_frame=10&selected_indices=0,1,2,3,4"
-      {:ok, _view, html} = live(conn, url)
-
-      assert html =~ "Random Selection Mode"
-      assert html =~ "Add Left"
-      assert html =~ "Add Right"
-      assert html =~ "Clear"
+      render_hook(view, "move_playhead", %{"delta" => 1000})
+      assert :sys.get_state(view.pid).socket.assigns.playhead == 49
     end
   end
 
-  describe "timeline controls and navigation" do
-    test "timeline scrubbing updates position", %{conn: conn, video: video} do
+  describe "range selection" do
+    test "select_range sets the range from frame numbers", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      render_click(view, "timeline_scrub", %{"position" => "0.5"})
+      render_hook(view, "select_range", %{"start_frame_number" => 5, "end_frame_number" => 12})
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.timeline_position == 0.5
+      assert state.sel_start == 4
+      assert state.sel_end == 11
     end
 
-    test "timeline click updates position and stops playback", %{conn: conn, video: video} do
+    test "select_range normalizes reversed bounds", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Start playback first
-      render_click(view, "toggle_playback")
-
-      # Click on timeline
-      render_click(view, "timeline_click", %{"position" => "0.3"})
+      render_hook(view, "select_range", %{"start_frame_number" => 12, "end_frame_number" => 5})
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.timeline_position == 0.3
-      assert state.timeline_playing == false
+      assert state.sel_start == 4
+      assert state.sel_end == 11
     end
 
-    test "playback speed control works", %{conn: conn, video: video} do
+    test "set_range_point I/O builds a range around the playhead", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      render_click(view, "set_playback_speed", %{"speed" => "2.0"})
+      render_hook(view, "move_playhead", %{"delta" => 10})
+      render_hook(view, "set_range_point", %{"point" => "in"})
+      render_hook(view, "move_playhead", %{"delta" => 5})
+      render_hook(view, "set_range_point", %{"point" => "out"})
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.playback_speed == 2.0
+      assert state.sel_start == 10
+      assert state.sel_end == 15
     end
 
-    test "timeline zoom control works", %{conn: conn, video: video} do
+    test "clear_range clears the selection", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      render_click(view, "zoom_timeline", %{"zoom" => "2.0"})
+      render_hook(view, "select_range", %{"start_frame_number" => 5, "end_frame_number" => 12})
+      render_click(view, "clear_range")
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.timeline_zoom == 2.0
+      assert state.sel_start == nil
+      assert state.sel_end == nil
     end
 
-    test "playback toggle starts and stops animation", %{conn: conn, video: video} do
+    test "selection readout renders in the action bar", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Start playback
-      render_click(view, "toggle_playback")
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.timeline_playing == true
+      html =
+        render_hook(view, "select_range", %{"start_frame_number" => 1, "end_frame_number" => 10})
 
-      # Stop playback
-      render_click(view, "toggle_playback")
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.timeline_playing == false
+      assert html =~ "10 frames"
+      assert html =~ "1.0s"
     end
   end
 
-  describe "frame selection and GIF preview" do
-    test "frame selection works", %{conn: conn, video: video} do
+  describe "fps control" do
+    test "set_fps updates the playback speed", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      render_click(view, "select_frame", %{"frame_index" => "0"})
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert 0 in state.selected_frame_indices
+      render_click(view, "set_fps", %{"fps" => "15"})
+      assert :sys.get_state(view.pid).socket.assigns.fps == 15
     end
 
-    test "frame deselection works", %{conn: conn, video: video} do
+    test "set_fps rejects values outside the allowed options", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Select and then deselect
-      render_click(view, "select_frame", %{"frame_index" => "0"})
-      render_click(view, "select_frame", %{"frame_index" => "0"})
+      render_click(view, "set_fps", %{"fps" => "99"})
+      assert :sys.get_state(view.pid).socket.assigns.fps == 10
+    end
+  end
 
-      state = :sys.get_state(view.pid).socket.assigns
-      assert 0 not in state.selected_frame_indices
+  describe "shortcuts overlay" do
+    test "toggle and escape close the overlay", %{conn: conn, video: video} do
+      {:ok, view, _html} = live(conn, "/video/#{video.id}")
+
+      html = render_click(view, "toggle_shortcuts")
+      assert html =~ "Keyboard shortcuts"
+
+      render_hook(view, "editor_escape", %{})
+      refute :sys.get_state(view.pid).socket.assigns.show_shortcuts
     end
 
-    test "range selection works", %{conn: conn, video: video} do
+    test "escape clears the range when no overlay is open", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      render_click(view, "select_frame_range", %{
-        "start_index" => "0",
-        "end_index" => "4",
-        "indices" => ["0", "1", "2", "3", "4"]
+      render_hook(view, "select_range", %{"start_frame_number" => 5, "end_frame_number" => 12})
+      render_hook(view, "editor_escape", %{})
+
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.sel_start == nil
+    end
+  end
+
+  describe "caption search" do
+    test "search runs asynchronously and reports no matches", %{conn: conn, video: video} do
+      {:ok, view, _html} = live(conn, "/video/#{video.id}")
+
+      render_change(view, "caption_search_change", %{
+        "caption_search" => %{"term" => "nothing here"}
       })
 
-      state = :sys.get_state(view.pid).socket.assigns
-      assert [0, 1, 2, 3, 4] == state.selected_frame_indices
-    end
-
-    test "GIF preview shows when frames selected", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      # Select multiple frames
-      render_click(view, "select_frame", %{"frame_index" => "0"})
-      render_click(view, "select_frame", %{"frame_index" => "1"})
-
-      html = render(view)
-      assert html =~ "GIF Preview"
-      assert html =~ "Generate GIF"
-    end
-
-    test "captions load for selected frames", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      render_click(view, "select_frame", %{"frame_index" => "0"})
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert is_list(state.selected_frame_captions)
-    end
-  end
-
-  describe "search and filtering" do
-    test "caption search filters frames", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      render_change(view, "caption_search", %{"caption_search" => %{"term" => "test"}})
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.is_caption_filtered == true
-    end
-
-    test "search from URL parameters works", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?search=hello"
-      {:ok, view, _html} = live(conn, url)
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.caption_search_term == "hello"
-    end
-
-    test "context frame from URL parameters works", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?search=hello&context_frame=10"
-      {:ok, view, _html} = live(conn, url)
-
-      # Should trigger context view
+      # allow the async handle_info to run
       :sys.get_state(view.pid)
-
       html = render(view)
-      # Should show some indication of context view
-      assert html =~ "Back to search" or html =~ "Context"
+
+      assert html =~ "No captions match"
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.caption_loading == false
+      assert state.caption_searched == true
     end
 
-    test "clear search filter works", %{conn: conn, video: video} do
+    test "short terms reset search state", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Apply filter first
-      render_change(view, "caption_search", %{"caption_search" => %{"term" => "test"}})
-
-      # Clear filter
-      render_click(view, "clear_caption_filter")
+      render_change(view, "caption_search_change", %{"caption_search" => %{"term" => "ab"}})
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.is_caption_filtered == false
-      assert state.caption_search_term == ""
+      assert state.caption_results == []
+      assert state.caption_searched == false
     end
 
-    test "autocomplete suggestions work", %{conn: conn, video: video} do
+    test "jump_to_frame moves the playhead", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      render_change(view, "caption_autocomplete", %{"caption_search" => %{"term" => "hel"}})
+      render_click(view, "jump_to_frame", %{"frame_number" => "20"})
 
-      state = :sys.get_state(view.pid).socket.assigns
-      assert is_list(state.caption_autocomplete_suggestions)
+      assert :sys.get_state(view.pid).socket.assigns.playhead == 19
     end
   end
 
-  describe "GIF generation" do
-    test "server-side GIF generation starts with selected frames", %{conn: conn, video: video} do
+  describe "GIF generation guards" do
+    test "generate with no range is a no-op", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Select frames
-      render_click(view, "select_frame", %{"frame_index" => "0"})
-      render_click(view, "select_frame", %{"frame_index" => "1"})
+      render_hook(view, "keyboard_generate", %{})
 
-      # Start generation
-      render_click(view, "generate_timeline_gif_server")
-
-      state = :sys.get_state(view.pid).socket.assigns
-      # May already have finished or failed fast depending on ffmpeg availability
-      assert state.gif_generation_status in [:generating, :completed, nil]
+      assert :sys.get_state(view.pid).socket.assigns.gif_generation_status == nil
     end
 
-    test "GIF generation shows error with no frames", %{conn: conn, video: video} do
+    test "single-frame range shows guidance instead of generating", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Try to generate without selecting frames
-      render_click(view, "generate_timeline_gif_server")
+      render_hook(view, "set_range_point", %{"point" => "in"})
+      html = render_hook(view, "keyboard_generate", %{})
 
-      # Should not start generation
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.gif_generation_status != :generating
-    end
-
-    test "reset GIF generation works", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      # Mock completed generation state
-      :sys.replace_state(view.pid, fn state ->
-        put_in(state.socket.assigns.gif_generation_status, :completed)
-      end)
-
-      render_click(view, "reset_gif_generation")
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.gif_generation_status == nil
+      assert html =~ "Select at least 2 frames"
+      assert :sys.get_state(view.pid).socket.assigns.gif_generation_status == nil
     end
   end
 
-  describe "random GIF functionality" do
-    test "random GIF button generates new URL", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      # The event redirects to a fresh random selection URL
-      assert {:error, {:redirect, %{to: to}}} = render_click(view, "random_gif")
-      assert to =~ "/video/"
-      assert to =~ "random=true"
-    end
-
-    test "expand random left adds frames", %{conn: conn, video: video} do
-      # Set up random selection state
-      url = "/video/#{video.id}?random=true&start_frame=10&selected_indices=0,1,2,3,4"
-      {:ok, view, _html} = live(conn, url)
-
-      initial_count = length(:sys.get_state(view.pid).socket.assigns.current_frames)
-
-      render_click(view, "expand_random_left")
-
-      new_count = length(:sys.get_state(view.pid).socket.assigns.current_frames)
-      assert new_count >= initial_count
-    end
-
-    test "expand random right adds frames", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?random=true&start_frame=10&selected_indices=0,1,2,3,4"
-      {:ok, view, _html} = live(conn, url)
-
-      initial_count = length(:sys.get_state(view.pid).socket.assigns.current_frames)
-
-      render_click(view, "expand_random_right")
-
-      new_count = length(:sys.get_state(view.pid).socket.assigns.current_frames)
-      assert new_count >= initial_count
-    end
-
-    test "clear random selection works", %{conn: conn, video: video} do
-      url = "/video/#{video.id}?random=true&start_frame=10&selected_indices=0,1,2,3,4"
-      {:ok, view, _html} = live(conn, url)
-
-      render_click(view, "clear_random_selection")
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.is_random_selection == false
-      assert state.random_start_frame == nil
-    end
-  end
-
-  describe "posting to timeline" do
-    test "authenticated user can post GIF to timeline", %{
+  describe "posting" do
+    test "post without a generated GIF sets an error", %{
       conn: conn,
       regular_user: user,
       video: video
@@ -383,204 +235,56 @@ defmodule NathanForUsWeb.VideoTimelineLiveTest do
       conn = log_in_user(conn, user)
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
-      # Wait for initial frames to load, then compute the hash the post flow will look up
-      :sys.get_state(view.pid)
-      current_frames = :sys.get_state(view.pid).socket.assigns.current_frames
-      selected = Enum.take(current_frames, 2)
-      frame_ids = Enum.map(selected, & &1.id)
-      hash = NathanForUs.Gif.generate_hash(video.id, frame_ids)
-
-      {:ok, gif} =
-        %NathanForUs.Gif{}
-        |> NathanForUs.Gif.changeset(%{
-          hash: hash,
-          video_id: video.id,
-          frame_ids: frame_ids,
-          gif_data: <<71, 73, 70>>,
-          frame_count: length(frame_ids)
-        })
-        |> NathanForUs.Repo.insert()
-
-      {:ok, _browseable} =
-        NathanForUs.Viral.create_browseable_gif(%{
-          video_id: video.id,
-          gif_id: gif.id,
-          start_frame_index: 0,
-          end_frame_index: 1
-        })
-
-      # Mock completed GIF state
+      # Force a completed status without a browseable record
       :sys.replace_state(view.pid, fn state ->
-        new_assigns = %{
-          gif_generation_status: :completed,
-          generated_gif_data: "fake_gif_data",
-          selected_frame_indices: [0, 1]
-        }
+        assigns =
+          Map.merge(state.socket.assigns, %{
+            gif_generation_status: :completed,
+            generated_gif_id: 123,
+            generated_browseable_gif_id: nil
+          })
 
-        %{state | socket: %{state.socket | assigns: Map.merge(state.socket.assigns, new_assigns)}}
+        %{state | socket: %{state.socket | assigns: assigns}}
       end)
 
-      render_click(view, "post_to_timeline")
+      render_submit(view, "post_to_timeline", %{"post" => %{"title" => "My GIF"}})
 
-      # Should show success message
-      html = render(view)
-      assert html =~ "posted to the public timeline" or html =~ "success"
-    end
-
-    test "unauthenticated user cannot post to timeline", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      render_click(view, "post_to_timeline")
-
-      html = render(view)
-      assert html =~ "log in" or html =~ "Please log in"
-    end
-
-    test "cannot post without generated GIF", %{conn: conn, regular_user: user, video: video} do
-      conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      render_click(view, "post_to_timeline")
-
-      html = render(view)
-      assert html =~ "generate" or html =~ "GIF first"
+      state = :sys.get_state(view.pid).socket.assigns
+      assert state.post_error =~ "regenerate"
+      refute state.posted_to_timeline
     end
   end
 
-  describe "modal functionality" do
-    test "frame modal opens and closes", %{conn: conn, video: video, frames: frames} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      frame = List.first(frames)
-
-      # Open modal
-      render_click(view, "show_frame_modal", %{"frame_id" => to_string(frame.id)})
+  describe "URL parameter compatibility" do
+    test "random parameters pre-select a range", %{conn: conn, video: video} do
+      url = "/video/#{video.id}?random=true&start_frame=10&selected_indices=0,1,2,3,4"
+      {:ok, view, _html} = live(conn, url)
 
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.show_frame_modal == true
-      assert state.modal_frame.id == frame.id
-
-      # Close modal
-      render_click(view, "close_frame_modal")
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.show_frame_modal == false
+      assert state.sel_start == 9
+      assert state.sel_end == 13
     end
 
-    test "tutorial modal opens and closes", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
+    test "invalid random parameters flash an error", %{conn: conn, video: video} do
+      url = "/video/#{video.id}?random=true&start_frame=invalid&selected_indices=0,1,2"
+      {:ok, view, _html} = live(conn, url)
 
-      # Open tutorial
-      render_click(view, "show_tutorial_modal")
-
+      # no selection was made
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.show_tutorial_modal == true
-
-      # Close tutorial
-      render_click(view, "close_tutorial_modal")
-
-      state = :sys.get_state(view.pid).socket.assigns
-      assert state.show_tutorial_modal == false
+      assert state.sel_start == nil
     end
-  end
 
-  describe "context view functionality" do
-    test "clicking frame in search results shows context", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
+    test "search parameter triggers a caption search", %{conn: conn, video: video} do
+      {:ok, view, _html} = live(conn, "/video/#{video.id}?search=test%20phrase")
 
-      # First do a search to get filtered results
-      render_change(view, "caption_search", %{"caption_search" => %{"term" => "test"}})
-
-      # Then click a frame to show context
-      render_click(view, "select_frame", %{"frame_index" => "0"})
-
-      # Should potentially show context view
       :sys.get_state(view.pid)
-    end
-
-    test "back to search results works", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      # Set up context view state
-      :sys.replace_state(view.pid, fn state ->
-        new_assigns = %{
-          is_context_view: true,
-          is_caption_filtered: true
-        }
-
-        %{state | socket: %{state.socket | assigns: Map.merge(state.socket.assigns, new_assigns)}}
-      end)
-
-      render_click(view, "back_to_search_results")
-
       state = :sys.get_state(view.pid).socket.assigns
-      assert state.is_context_view == false
-    end
-
-    test "expand context left and right work", %{conn: conn, video: video} do
-      {:ok, view, _html} = live(conn, "/video/#{video.id}")
-
-      # Set up context view state with a target frame
-      target_frame = %{frame_number: 25, id: 1, image_data: nil, timestamp_ms: 25_000, width: 640, height: 360, file_size: nil}
-
-      :sys.replace_state(view.pid, fn state ->
-        new_assigns = %{
-          is_context_view: true,
-          context_target_frame: target_frame,
-          current_frames: [target_frame]
-        }
-
-        %{state | socket: %{state.socket | assigns: Map.merge(state.socket.assigns, new_assigns)}}
-      end)
-
-      render_click(view, "expand_context_left")
-      render_click(view, "expand_context_right")
-
-      # Should expand the context (exact behavior depends on available frames)
-      :sys.get_state(view.pid)
-    end
-  end
-
-  describe "admin functionality" do
-    test "admin users see admin features", %{conn: conn, admin_user: admin, video: video} do
-      conn = log_in_user(conn, admin)
-      {:ok, _view, html} = live(conn, "/video/#{video.id}")
-
-      # Should show admin-specific elements when GIF is generated
-      # Admin features may be conditional
-      assert html =~ "ADMIN" or html =~ "cache" or true
-    end
-
-    test "regular users do not see admin features", %{
-      conn: conn,
-      regular_user: user,
-      video: video
-    } do
-      conn = log_in_user(conn, user)
-      {:ok, _view, html} = live(conn, "/video/#{video.id}")
-
-      # Should not show admin debug info
-      refute html =~ "ADMIN DEBUG"
+      assert state.caption_search_term == "test phrase"
+      assert state.caption_searched == true
     end
   end
 
   # Helper functions
-
-  defp create_admin_user do
-    attrs = %{
-      email: "admin@test.com",
-      username: "testadmin",
-      password: "test123456789",
-      is_admin: true
-    }
-
-    {:ok, user} = Accounts.register_user(attrs)
-    user = %{user | confirmed_at: DateTime.utc_now() |> DateTime.truncate(:second)}
-    user = Repo.update!(Accounts.User.confirm_changeset(user))
-    user = Repo.update!(Accounts.User.changeset(user, %{is_admin: true}))
-
-    {:ok, user}
-  end
 
   defp create_regular_user do
     attrs = %{
@@ -609,7 +313,21 @@ defmodule NathanForUsWeb.VideoTimelineLiveTest do
     |> Repo.insert()
   end
 
+  defp create_test_caption(video) do
+    %NathanForUs.Video.VideoCaption{}
+    |> NathanForUs.Video.VideoCaption.changeset(%{
+      video_id: video.id,
+      start_time_ms: 1000,
+      end_time_ms: 3000,
+      text: "the plan is simple",
+      caption_index: 0
+    })
+    |> Repo.insert()
+  end
+
   defp create_test_frames(video, count) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
     frames =
       for i <- 1..count do
         %{
@@ -620,29 +338,12 @@ defmodule NathanForUsWeb.VideoTimelineLiveTest do
           width: 1920,
           height: 1080,
           video_id: video.id,
-          inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second),
-          updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+          inserted_at: now,
+          updated_at: now
         }
       end
 
     {_count, frame_records} = Repo.insert_all(VideoFrame, frames, returning: true)
     frame_records
-  end
-
-  defp create_test_gif(video, frames) do
-    frame_ids = frames |> Enum.take(5) |> Enum.map(& &1.id)
-    hash = Gif.generate_hash(video.id, frame_ids)
-
-    %NathanForUs.Gif{}
-    |> NathanForUs.Gif.changeset(%{
-      hash: hash,
-      frame_ids: frame_ids,
-      gif_data: "fake_gif_data",
-      frame_count: 5,
-      duration_ms: 1000,
-      file_size: 50000,
-      video_id: video.id
-    })
-    |> Repo.insert()
   end
 end

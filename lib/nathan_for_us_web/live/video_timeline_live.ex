@@ -1,1630 +1,981 @@
 defmodule NathanForUsWeb.VideoTimelineLive do
   @moduledoc """
-  Timeline-based video browser LiveView.
+  The GIF editor (`/video/:video_id`).
 
-  Provides an intuitive timeline interface where users can drag to navigate
-  through the entire video, see frame previews, and create GIFs from any section.
+  Selection is a contiguous frame range `{sel_start, sel_end}` (indices into
+  a lightweight whole-video frame index) plus a playhead. Thumbnails and
+  previews are served via `GET /frame/:id` — no frame binaries cross the
+  websocket. Client interaction lives in three JS hooks: `Filmstrip`
+  (pointer gestures), `RangePreview` (looping stage preview), and
+  `KeyboardShortcuts`.
   """
 
   use NathanForUsWeb, :live_view
 
-  alias NathanForUs.{Repo, AdminService}
+  import Ecto.Query, only: [from: 2]
 
-  on_mount {NathanForUsWeb.UserAuth, :mount_current_user}
+  alias NathanForUs.{AdminService, Gif, Repo, Video, Viral}
   alias NathanForUs.Video.VideoFrame
-  alias NathanForUs.Gif
+  alias NathanForUs.Viral.BrowseableGif
 
   alias NathanForUsWeb.Components.VideoTimeline.{
-    TimelinePlayer,
-    FrameDisplay,
-    TimelineControls,
     CaptionSearch,
+    FrameDisplay,
     GifPreview
   }
 
+  on_mount {NathanForUsWeb.UserAuth, :mount_current_user}
+
   require Logger
 
-  @default_frames_per_page 50
+  @fps_options [5, 10, 15]
+  @default_fps 10
+  @generation_timeout_ms 60_000
+  @max_caption_results 100
 
-  def handle_params(params, _url, socket) do
-    search_term = Map.get(params, "search", "")
-    context_frame = Map.get(params, "context_frame", "")
-    is_random = Map.get(params, "random", "false") == "true"
-    start_frame = Map.get(params, "start_frame", "")
-    selected_indices = Map.get(params, "selected_indices", "")
-
-    socket =
-      cond do
-        search_term != "" ->
-          # Decode the URL-encoded search term
-          decoded_search_term = URI.decode(search_term)
-
-          # Set the search term and trigger the search automatically
-          socket
-          |> assign(:caption_search_term, decoded_search_term)
-          |> then(fn socket ->
-            # Trigger search if the term is long enough
-            if String.length(decoded_search_term) >= 3 do
-              if context_frame != "" do
-                # If we have a context frame, trigger context view after search
-                try do
-                  context_frame_number = String.to_integer(context_frame)
-
-                  send(
-                    self(),
-                    {:auto_search_from_params, decoded_search_term, context_frame_number}
-                  )
-                rescue
-                  ArgumentError ->
-                    send(self(), {:auto_search_from_params, decoded_search_term})
-                end
-              else
-                send(self(), {:auto_search_from_params, decoded_search_term})
-              end
-            end
-
-            socket
-          end)
-
-        is_random and start_frame != "" and selected_indices != "" ->
-          # Handle random GIF generation
-          try do
-            start_frame_num = String.to_integer(start_frame)
-            # Decode URL-encoded commas and parse indices
-            decoded_indices = URI.decode(selected_indices)
-
-            indices_list =
-              decoded_indices
-              |> String.split(",")
-              |> Enum.map(&String.to_integer/1)
-
-            # Load frames starting from the specified frame and mark as random selection
-            send(self(), {:load_random_sequence, start_frame_num, indices_list})
-
-            socket
-            |> assign(:is_random_selection, true)
-            |> assign(:random_start_frame, start_frame_num)
-          rescue
-            ArgumentError ->
-              socket |> put_flash(:error, "Invalid random parameters")
-          end
-
-        true ->
-          socket
-      end
-
-    {:noreply, socket}
-  end
+  # ── Mount / params ──────────────────────────────────────────────────────
 
   def mount(%{"video_id" => video_id}, _session, socket) do
-    try do
-      video_id = String.to_integer(video_id)
+    case Integer.parse(video_id) do
+      {video_id, ""} -> mount_video(video_id, socket)
+      _ -> {:ok, invalid_video_redirect(socket, "Invalid video ID")}
+    end
+  end
 
-      case NathanForUs.Video.get_video(video_id) do
-        {:error, :not_found} ->
-          socket =
-            socket
-            |> put_flash(:error, "Video not found")
-            |> redirect(to: ~p"/")
+  defp mount_video(video_id, socket) do
+    case Video.get_video(video_id) do
+      {:error, :not_found} ->
+        {:ok, invalid_video_redirect(socket, "Video not found")}
 
-          {:ok, socket}
+      {:ok, video} ->
+        {:ok, frame_count} = Video.get_video_frame_count(video_id)
+        video_duration_ms = Video.get_video_duration_ms(video_id)
 
-        {:ok, video} ->
-          # Get video metadata
-          {:ok, frame_count} = NathanForUs.Video.get_video_frame_count(video_id)
-          video_duration_ms = NathanForUs.Video.get_video_duration_ms(video_id)
+        frame_index =
+          if connected?(socket), do: Video.list_frame_index(video_id), else: []
 
-          socket =
-            socket
-            |> assign(:video, video)
-            |> assign(:frame_count, frame_count)
-            |> assign(:video_duration_ms, video_duration_ms || 0)
-            # 0.0 to 1.0
-            |> assign(:timeline_position, 0.0)
-            |> assign(:current_frames, [])
-            |> assign(:loading_frames, false)
-            |> assign(:frames_per_view, @default_frames_per_page)
-            |> assign(:selected_frame_indices, [])
-            |> assign(:timeline_zoom, 1.0)
-            |> assign(:show_frame_modal, false)
-            |> assign(:modal_frame, nil)
-            |> assign(:modal_frame_captions, [])
-            |> assign(:timeline_playing, false)
-            |> assign(:playback_speed, 1.0)
-            |> assign(:page_title, "Timeline: #{video.title}")
-            |> assign(:show_tutorial_modal, false)
-            |> assign(:caption_search_term, "")
-            |> assign(:caption_search_form, to_form(%{}))
-            |> assign(:caption_autocomplete_suggestions, [])
-            |> assign(:show_caption_autocomplete, false)
-            |> assign(:caption_loading, false)
-            |> assign(:caption_filtered_frames, [])
-            |> assign(:is_caption_filtered, false)
-            |> assign(:context_frames, [])
-            |> assign(:is_context_view, false)
-            |> assign(:context_target_frame, nil)
-            |> assign(:expand_count, 3)
-            |> assign(:gif_generation_status, nil)
-            |> assign(:generated_gif_data, nil)
-            |> assign(:is_random_selection, false)
-            |> assign(:random_start_frame, nil)
-            |> assign(:is_admin, is_admin?(socket))
-            |> assign(:gif_cache_status, nil)
-            |> assign(:gif_from_cache, false)
-            |> assign(:selected_frame_captions, [])
-            |> assign(:show_posted_success_flash, false)
-            |> assign(:has_captions, video_has_captions?(video_id))
-
-          # Load initial frames
-          send(self(), {:load_frames_at_position, 0.0})
-
-          {:ok, socket}
-      end
-    rescue
-      ArgumentError ->
         socket =
           socket
-          |> put_flash(:error, "Invalid video ID")
-          |> redirect(to: ~p"/")
+          |> assign(:video, video)
+          |> assign(:page_title, "Edit · #{video.title}")
+          |> assign(:frame_count, frame_count)
+          |> assign(:video_duration_ms, video_duration_ms || 0)
+          |> assign(:frame_index, frame_index)
+          |> assign(:index_by_number, index_by_number(frame_index))
+          |> assign(:playhead, 0)
+          |> assign(:sel_start, nil)
+          |> assign(:sel_end, nil)
+          |> assign(:fps, @default_fps)
+          |> assign(:show_shortcuts, false)
+          |> assign(:has_captions, video_has_captions?(video_id))
+          |> assign(:caption_search_term, "")
+          |> assign(:caption_loading, false)
+          |> assign(:caption_results, [])
+          |> assign(:caption_result_count, 0)
+          |> assign(:caption_results_open, false)
+          |> assign(:caption_searched, false)
+          |> assign(:caption_match_idxs, [])
+          |> reset_generation_assigns()
+          |> refresh_preview()
 
         {:ok, socket}
     end
   end
 
-  def handle_event("timeline_scrub", %{"position" => position_str}, socket) do
-    try do
-      position = String.to_float(position_str)
-      # Clamp between 0 and 1
-      position = max(0.0, min(1.0, position))
+  defp invalid_video_redirect(socket, message) do
+    socket
+    |> put_flash(:error, message)
+    |> redirect(to: ~p"/")
+  end
 
-      socket = assign(socket, :timeline_position, position)
-
-      # Debounce frame loading to avoid too many requests
-      Process.send_after(self(), {:load_frames_at_position, position}, 150)
-
+  def handle_params(params, _url, socket) do
+    if connected?(socket) and socket.assigns[:frame_index] not in [nil, []] do
+      {:noreply, apply_url_params(socket, params)}
+    else
       {:noreply, socket}
-    rescue
-      ArgumentError ->
-        Logger.warning("Invalid timeline position: #{position_str}")
-        {:noreply, socket}
     end
   end
 
-  def handle_event("timeline_click", %{"position" => position_str}, socket) do
-    try do
-      position = String.to_float(position_str)
-      position = max(0.0, min(1.0, position))
-
-      socket =
-        socket
-        |> assign(:timeline_position, position)
-        |> assign(:timeline_playing, false)
-
-      send(self(), {:load_frames_at_position, position})
-
-      {:noreply, socket}
-    rescue
-      ArgumentError ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("toggle_playback", _params, socket) do
-    new_playing_state = !socket.assigns.timeline_playing
-
-    socket = assign(socket, :timeline_playing, new_playing_state)
-
-    if new_playing_state do
-      send(self(), :advance_timeline)
-    end
-
-    {:noreply, socket}
-  end
-
-  def handle_event("set_playback_speed", %{"speed" => speed_str}, socket) do
-    try do
-      speed = String.to_float(speed_str)
-      # Clamp between 0.1x and 4x
-      speed = max(0.1, min(4.0, speed))
-
-      socket = assign(socket, :playback_speed, speed)
-      {:noreply, socket}
-    rescue
-      ArgumentError ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("zoom_timeline", %{"zoom" => zoom_str}, socket) do
-    try do
-      zoom = String.to_float(zoom_str)
-      # Clamp between 0.1x and 10x
-      zoom = max(0.1, min(10.0, zoom))
-
-      socket = assign(socket, :timeline_zoom, zoom)
-      {:noreply, socket}
-    rescue
-      ArgumentError ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("select_frame", %{"frame_index" => frame_index_str} = params, socket) do
-    try do
-      frame_index = String.to_integer(frame_index_str)
-      shift_key = Map.get(params, "shift_key", "false") == "true"
-
-      # If we're in caption filtered state AND not already in context view, clicking a frame should show context
-      if socket.assigns.is_caption_filtered and not socket.assigns.is_context_view do
-        # Get the clicked frame
-        clicked_frame = Enum.at(socket.assigns.current_frames, frame_index)
-
-        if clicked_frame do
-          # Load context frames around this frame
-          video_id = socket.assigns.video.id
-
-          context_frames =
-            NathanForUs.Video.get_frames_with_context(video_id, clicked_frame.frame_number, 5, 5)
-
-          socket =
-            socket
-            |> assign(:context_frames, context_frames)
-            |> assign(:is_context_view, true)
-            |> assign(:context_target_frame, clicked_frame)
-            |> assign(:current_frames, context_frames)
-            # Clear selection
-            |> assign(:selected_frame_indices, [])
-
-          {:noreply, socket}
-        else
-          {:noreply, socket}
-        end
-      else
-        # Normal frame selection behavior
-        current_selected = socket.assigns.selected_frame_indices
-
-        new_selected =
-          cond do
-            shift_key ->
-              # For shift-click, we'll handle it in select_frame_range
-              current_selected
-
-            frame_index in current_selected ->
-              List.delete(current_selected, frame_index)
-
-            true ->
-              [frame_index | current_selected] |> Enum.sort()
-          end
-
-        socket =
-          socket
-          |> assign(:selected_frame_indices, new_selected)
-          |> load_selected_frame_captions()
-
-        {:noreply, socket}
-      end
-    rescue
-      ArgumentError ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event(
-        "select_frame_range",
-        %{"start_index" => _start_str, "end_index" => _end_str, "indices" => indices_list},
-        socket
-      ) do
-    try do
-      range_indices = Enum.map(indices_list, &String.to_integer/1)
-
-      current_selected = socket.assigns.selected_frame_indices
-
-      # Add range to current selection (union)
-      new_selected =
-        (current_selected ++ range_indices)
-        |> Enum.uniq()
-        |> Enum.sort()
-
-      socket =
-        socket
-        |> assign(:selected_frame_indices, new_selected)
-        |> load_selected_frame_captions()
-
-      {:noreply, socket}
-    rescue
-      ArgumentError ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("preview_frame_selection", %{"indices" => _indices_list}, socket) do
-    # This is just for preview during drag selection - don't actually update selection yet
-    {:noreply, socket}
-  end
-
-  def handle_event("show_frame_modal", %{"frame_id" => frame_id_str}, socket) do
-    try do
-      frame_id = String.to_integer(frame_id_str)
-
-      case Repo.get(VideoFrame, frame_id) do
-        nil ->
-          {:noreply, put_flash(socket, :error, "Frame not found")}
-
-        frame ->
-          # Get captions for this frame
-          captions = NathanForUs.Video.get_frame_captions(frame_id)
-
-          socket =
-            socket
-            |> assign(:show_frame_modal, true)
-            |> assign(:modal_frame, frame)
-            |> assign(:modal_frame_captions, captions)
-
-          {:noreply, socket}
-      end
-    rescue
-      ArgumentError ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("close_frame_modal", _params, socket) do
-    socket =
-      socket
-      |> assign(:show_frame_modal, false)
-      |> assign(:modal_frame, nil)
-      |> assign(:modal_frame_captions, [])
-
-    {:noreply, socket}
-  end
-
-  def handle_event("close_tutorial_modal", _params, socket) do
-    socket = assign(socket, :show_tutorial_modal, false)
-    {:noreply, socket}
-  end
-
-  def handle_event("show_tutorial_modal", _params, socket) do
-    socket = assign(socket, :show_tutorial_modal, true)
-    {:noreply, socket}
-  end
-
-  def handle_event("caption_autocomplete", %{"caption_search" => %{"term" => term}}, socket) do
-    term = String.trim(term)
-
-    socket = assign(socket, :caption_search_term, term)
+  # Backwards-compatible deep links from the library / feed:
+  #   ?search=term[&context_frame=N]  — run a caption search, optionally jump
+  #   ?random=true&start_frame=S&selected_indices=…  — pre-select a range
+  defp apply_url_params(socket, %{"search" => term} = params) when term != "" do
+    term = term |> URI.decode() |> String.trim()
 
     socket =
       if String.length(term) >= 3 do
-        video_id = socket.assigns.video.id
-        suggestions = NathanForUs.Video.get_autocomplete_suggestions(term, video_id, 5)
+        send(self(), {:run_caption_search, term})
 
         socket
-        |> assign(:caption_autocomplete_suggestions, suggestions)
-        |> assign(:show_caption_autocomplete, length(suggestions) > 0)
+        |> assign(:caption_search_term, term)
+        |> assign(:caption_loading, true)
+        |> assign(:caption_results_open, true)
       else
         socket
-        |> assign(:caption_autocomplete_suggestions, [])
-        |> assign(:show_caption_autocomplete, false)
+      end
+
+    case parse_int(params["context_frame"]) do
+      nil -> socket
+      frame_number -> jump_playhead_to_frame_number(socket, frame_number)
+    end
+  end
+
+  defp apply_url_params(socket, %{"random" => "true", "start_frame" => start_frame} = params) do
+    with start_number when not is_nil(start_number) <- parse_int(start_frame),
+         start_idx when not is_nil(start_idx) <-
+           Map.get(socket.assigns.index_by_number, start_number) do
+      count =
+        params
+        |> Map.get("selected_indices", "")
+        |> URI.decode()
+        |> String.split(",", trim: true)
+        |> length()
+        |> max(2)
+
+      last_idx = min(start_idx + count - 1, length(socket.assigns.frame_index) - 1)
+
+      socket
+      |> assign(:sel_start, start_idx)
+      |> assign(:sel_end, last_idx)
+      |> assign(:playhead, start_idx)
+      |> refresh_preview()
+      |> push_event("filmstrip:scroll_to", %{index: start_idx})
+    else
+      _ -> put_flash(socket, :error, "Invalid random parameters")
+    end
+  end
+
+  defp apply_url_params(socket, _params), do: socket
+
+  # ── Playhead & range events ─────────────────────────────────────────────
+
+  def handle_event("set_playhead", %{"frame_number" => frame_number}, socket) do
+    case parse_int(frame_number) do
+      nil -> {:noreply, socket}
+      number -> {:noreply, jump_playhead_to_frame_number(socket, number, scroll: false)}
+    end
+  end
+
+  def handle_event("move_playhead", %{"delta" => delta}, socket) do
+    case parse_int(delta) do
+      nil ->
+        {:noreply, socket}
+
+      delta ->
+        max_idx = max(length(socket.assigns.frame_index) - 1, 0)
+        playhead = clamp(socket.assigns.playhead + delta, 0, max_idx)
+
+        socket =
+          socket
+          |> assign(:playhead, playhead)
+          |> refresh_preview()
+          |> push_event("filmstrip:scroll_to", %{index: playhead})
+
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("select_range", params, socket) do
+    with start_number when not is_nil(start_number) <- parse_int(params["start_frame_number"]),
+         end_number when not is_nil(end_number) <- parse_int(params["end_frame_number"]),
+         start_idx when not is_nil(start_idx) <-
+           Map.get(socket.assigns.index_by_number, start_number),
+         end_idx when not is_nil(end_idx) <- Map.get(socket.assigns.index_by_number, end_number) do
+      {sel_start, sel_end} = {min(start_idx, end_idx), max(start_idx, end_idx)}
+
+      socket =
+        socket
+        |> assign(:sel_start, sel_start)
+        |> assign(:sel_end, sel_end)
+        |> assign(:playhead, sel_start)
+        |> refresh_preview()
+
+      {:noreply, socket}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("set_range_point", %{"point" => point}, socket)
+      when point in ["in", "out"] do
+    if socket.assigns.frame_index == [] do
+      {:noreply, socket}
+    else
+      {:noreply, set_range_point(socket, point)}
+    end
+  end
+
+  def handle_event("set_range_point", _params, socket), do: {:noreply, socket}
+
+  def handle_event("clear_range", _params, socket) do
+    {:noreply, clear_range(socket)}
+  end
+
+  def handle_event("set_fps", %{"fps" => fps}, socket) do
+    case parse_int(fps) do
+      fps when fps in @fps_options -> {:noreply, socket |> assign(:fps, fps)}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  # ── Keyboard / overlay events ───────────────────────────────────────────
+
+  def handle_event("toggle_shortcuts", _params, socket) do
+    {:noreply, assign(socket, :show_shortcuts, !socket.assigns.show_shortcuts)}
+  end
+
+  def handle_event("close_shortcuts", _params, socket) do
+    {:noreply, assign(socket, :show_shortcuts, false)}
+  end
+
+  def handle_event("keyboard_generate", _params, socket) do
+    {:noreply, start_generation(socket)}
+  end
+
+  def handle_event("editor_escape", _params, socket) do
+    socket =
+      cond do
+        socket.assigns.show_shortcuts -> assign(socket, :show_shortcuts, false)
+        socket.assigns.show_post_form -> assign(socket, :show_post_form, false)
+        socket.assigns.caption_results_open -> assign(socket, :caption_results_open, false)
+        true -> clear_range(socket)
       end
 
     {:noreply, socket}
   end
 
-  def handle_event("select_caption_suggestion", %{"suggestion" => suggestion}, socket) do
-    socket =
-      socket
-      |> assign(:caption_search_term, suggestion)
-      |> assign(:show_caption_autocomplete, false)
+  # ── Caption search (async so the loading state actually renders) ────────
 
-    {:noreply, socket}
-  end
-
-  def handle_event("hide_caption_autocomplete", _params, socket) do
-    socket = assign(socket, :show_caption_autocomplete, false)
-    {:noreply, socket}
+  def handle_event("caption_search_change", %{"caption_search" => %{"term" => term}}, socket) do
+    {:noreply, run_caption_search(socket, term)}
   end
 
   def handle_event("caption_search", %{"caption_search" => %{"term" => term}}, socket) do
-    term = String.trim(term)
-
-    if String.length(term) >= 3 do
-      socket = assign(socket, :caption_loading, true)
-
-      # Search for frames with matching captions in this video
-      video_id = socket.assigns.video.id
-      filtered_frames = NathanForUs.Video.get_video_frames_with_caption_text(video_id, term)
-
-      socket =
-        socket
-        |> assign(:caption_filtered_frames, filtered_frames)
-        |> assign(:is_caption_filtered, true)
-        |> assign(:current_frames, filtered_frames)
-        |> assign(:caption_loading, false)
-        |> assign(:show_caption_autocomplete, false)
-        # Clear selection
-        |> assign(:selected_frame_indices, [])
-        # Reset context view
-        |> assign(:is_context_view, false)
-        |> assign(:context_frames, [])
-        |> assign(:context_target_frame, nil)
-
-      {:noreply, socket}
-    else
-      socket = put_flash(socket, :error, "Search term must be at least 3 characters")
-      {:noreply, socket}
-    end
+    {:noreply, run_caption_search(socket, term)}
   end
 
-  def handle_event("clear_caption_filter", _params, socket) do
-    # Clear the caption filter and reload frames at current timeline position
+  def handle_event("clear_caption_search", _params, socket) do
     socket =
       socket
-      |> assign(:caption_filtered_frames, [])
-      |> assign(:is_caption_filtered, false)
       |> assign(:caption_search_term, "")
-      |> assign(:selected_frame_indices, [])
-      |> assign(:context_frames, [])
-      |> assign(:is_context_view, false)
-      |> assign(:context_target_frame, nil)
-      # Reset to default
-      |> assign(:expand_count, 3)
-
-    # Reload frames at current position
-    send(self(), {:load_frames_at_position, socket.assigns.timeline_position})
+      |> assign(:caption_loading, false)
+      |> assign(:caption_results, [])
+      |> assign(:caption_result_count, 0)
+      |> assign(:caption_results_open, false)
+      |> assign(:caption_searched, false)
+      |> assign(:caption_match_idxs, [])
 
     {:noreply, socket}
   end
 
-  def handle_event("reload_all_frames", _params, socket) do
-    # Clear any search filters and reload all frames at current timeline position
-    socket =
-      socket
-      |> assign(:caption_filtered_frames, [])
-      |> assign(:is_caption_filtered, false)
-      |> assign(:caption_search_term, "")
-      |> assign(:selected_frame_indices, [])
-      |> assign(:context_frames, [])
-      |> assign(:is_context_view, false)
-      |> assign(:context_target_frame, nil)
-      |> assign(:expand_count, 3)
-
-    # Reload frames at current position
-    send(self(), {:load_frames_at_position, socket.assigns.timeline_position})
-
-    {:noreply, socket}
+  def handle_event("close_caption_results", _params, socket) do
+    {:noreply, assign(socket, :caption_results_open, false)}
   end
 
-  def handle_event("back_to_search_results", _params, socket) do
-    # Go back from context view to the filtered search results
-    socket =
-      socket
-      |> assign(:current_frames, socket.assigns.caption_filtered_frames)
-      |> assign(:is_context_view, false)
-      |> assign(:context_frames, [])
-      |> assign(:context_target_frame, nil)
-      |> assign(:selected_frame_indices, [])
-
-    {:noreply, socket}
-  end
-
-  def handle_event("update_expand_count", %{"expand_count" => count_str}, socket) do
-    try do
-      count = String.to_integer(count_str)
-      # Clamp between 1 and 20
-      count = max(1, min(20, count))
-
-      socket = assign(socket, :expand_count, count)
-      {:noreply, socket}
-    rescue
-      ArgumentError ->
+  def handle_event("jump_to_frame", %{"frame_number" => frame_number}, socket) do
+    case parse_int(frame_number) do
+      nil ->
         {:noreply, socket}
-    end
-  end
 
-  def handle_event("expand_random_left", _params, socket) do
-    if socket.assigns.is_random_selection do
-      video_id = socket.assigns.video.id
-      current_frames = socket.assigns.current_frames
-      expand_count = socket.assigns.expand_count
-
-      # Find the earliest frame number in current selection
-      earliest_frame_number = current_frames |> Enum.map(& &1.frame_number) |> Enum.min()
-
-      # Calculate new start frame
-      new_start_frame = max(1, earliest_frame_number - expand_count)
-
-      if new_start_frame < earliest_frame_number do
-        # Get additional frames
-        additional_frames =
-          NathanForUs.Video.get_video_frames_in_range(
-            video_id,
-            new_start_frame,
-            earliest_frame_number - 1
-          )
-
-        # Combine with existing frames
-        new_frames = additional_frames ++ current_frames
-
-        # Update selection indices to include the new frames
-        additional_count = length(additional_frames)
-
-        updated_indices =
-          socket.assigns.selected_frame_indices
-          # Shift existing indices
-          |> Enum.map(&(&1 + additional_count))
-          # Add new indices
-          |> then(&(Enum.to_list(0..(additional_count - 1)) ++ &1))
-
+      number ->
         socket =
           socket
-          |> assign(:current_frames, new_frames)
-          |> assign(:selected_frame_indices, updated_indices)
-          |> assign(:random_start_frame, new_start_frame)
+          |> jump_playhead_to_frame_number(number)
+          |> assign(:caption_results_open, false)
 
         {:noreply, socket}
-      else
-        {:noreply, socket}
-      end
-    else
-      {:noreply, socket}
     end
   end
 
-  def handle_event("expand_random_right", _params, socket) do
-    if socket.assigns.is_random_selection do
-      video_id = socket.assigns.video.id
-      current_frames = socket.assigns.current_frames
-      expand_count = socket.assigns.expand_count
+  # ── GIF generation & posting ────────────────────────────────────────────
 
-      # Find the latest frame number in current selection
-      latest_frame_number = current_frames |> Enum.map(& &1.frame_number) |> Enum.max()
-
-      # Calculate new end frame
-      new_end_frame = latest_frame_number + expand_count
-
-      # Get additional frames
-      additional_frames =
-        NathanForUs.Video.get_video_frames_in_range(
-          video_id,
-          latest_frame_number + 1,
-          new_end_frame
-        )
-
-      if not Enum.empty?(additional_frames) do
-        # Combine with existing frames
-        new_frames = current_frames ++ additional_frames
-
-        # Update selection indices to include the new frames
-        current_count = length(current_frames)
-        additional_count = length(additional_frames)
-        new_indices = Enum.to_list(current_count..(current_count + additional_count - 1))
-        updated_indices = socket.assigns.selected_frame_indices ++ new_indices
-
-        socket =
-          socket
-          |> assign(:current_frames, new_frames)
-          |> assign(:selected_frame_indices, updated_indices)
-
-        {:noreply, socket}
-      else
-        {:noreply, socket}
-      end
-    else
-      {:noreply, socket}
-    end
+  def handle_event("generate_gif", _params, socket) do
+    {:noreply, start_generation(socket)}
   end
 
-  def handle_event("clear_random_selection", _params, socket) do
+  def handle_event("open_post_form", _params, socket) do
     socket =
       socket
-      |> assign(:is_random_selection, false)
-      |> assign(:random_start_frame, nil)
-      |> assign(:selected_frame_indices, [])
-
-    # Reload frames at current position
-    send(self(), {:load_frames_at_position, socket.assigns.timeline_position})
+      |> assign(:show_post_form, true)
+      |> assign(:post_error, nil)
+      |> assign(:post_title, default_post_title(socket))
 
     {:noreply, socket}
   end
 
-  def handle_event("expand_context_left", _params, socket) do
-    if socket.assigns.is_context_view and socket.assigns.context_target_frame do
-      video_id = socket.assigns.video.id
-      current_frames = socket.assigns.current_frames
-      target_frame = socket.assigns.context_target_frame
-      expand_count = socket.assigns.expand_count
-
-      expanded_frames =
-        NathanForUs.Video.expand_context_left(
-          video_id,
-          current_frames,
-          target_frame.frame_number,
-          expand_count
-        )
-
-      socket =
-        socket
-        |> assign(:current_frames, expanded_frames)
-        |> assign(:context_frames, expanded_frames)
-        # Clear selection
-        |> assign(:selected_frame_indices, [])
-
-      {:noreply, socket}
-    else
-      {:noreply, socket}
-    end
+  def handle_event("cancel_post_form", _params, socket) do
+    {:noreply, assign(socket, :show_post_form, false)}
   end
 
-  def handle_event("expand_context_right", _params, socket) do
-    if socket.assigns.is_context_view and socket.assigns.context_target_frame do
-      video_id = socket.assigns.video.id
-      current_frames = socket.assigns.current_frames
-      target_frame = socket.assigns.context_target_frame
-      expand_count = socket.assigns.expand_count
+  def handle_event("post_to_timeline", params, socket) do
+    user = socket.assigns[:current_user]
+    browseable_gif_id = socket.assigns.generated_browseable_gif_id
+    title = params |> get_in(["post", "title"]) |> normalize_title()
 
-      expanded_frames =
-        NathanForUs.Video.expand_context_right(
-          video_id,
-          current_frames,
-          target_frame.frame_number,
-          expand_count
-        )
+    cond do
+      is_nil(user) ->
+        {:noreply, assign(socket, :post_error, "Log in to post to the timeline.")}
 
-      socket =
-        socket
-        |> assign(:current_frames, expanded_frames)
-        |> assign(:context_frames, expanded_frames)
-        # Clear selection
-        |> assign(:selected_frame_indices, [])
+      is_nil(browseable_gif_id) ->
+        {:noreply,
+         assign(socket, :post_error, "This GIF isn't ready to post — regenerate and try again.")}
 
-      {:noreply, socket}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("generate_timeline_gif_server", _params, socket) do
-    # Generate GIF on server side using selected frames
-    selected_frames = get_selected_frames(socket)
-    video_id = socket.assigns.video.id
-
-    case selected_frames do
-      [] ->
-        {:noreply, socket}
-
-      frames ->
-        # Check if GIF already exists
-        case Gif.find_or_prepare(video_id, frames) do
-          {:ok, existing_gif} ->
-            # GIF already exists, use cached version
-            gif_base64 = Gif.to_base64(existing_gif)
-
-            socket =
-              socket
-              |> assign(:gif_generation_status, :completed)
-              |> assign(:generated_gif_data, gif_base64)
-              |> assign(:gif_generation_task, nil)
-              |> assign(:gif_from_cache, true)
-              |> assign(:gif_cache_status, "Loaded from database cache (ID: #{existing_gif.id})")
-
-            {:noreply, socket}
-
-          {:generate, hash, frame_ids} ->
-            # Need to generate new GIF
-            task =
-              Task.async(fn ->
-                # Create a mock frame sequence for the existing GIF generation function
-                mock_sequence = %{sequence_frames: frames}
-                selected_indices = 0..(length(frames) - 1) |> Enum.to_list()
-
-                case NathanForUs.AdminService.generate_gif_from_frames(
-                       mock_sequence,
-                       selected_indices
-                     ) do
-                  {:ok, gif_binary} ->
-                    # Save the generated GIF to database
-                    case Gif.save_generated_gif(hash, video_id, frame_ids, gif_binary) do
-                      {:ok, saved_gif} ->
-                        # Also create a browseable GIF entry automatically
-                        create_browseable_gif_from_generation(
-                          frames,
-                          socket.assigns.video,
-                          socket.assigns[:current_user],
-                          saved_gif
-                        )
-
-                        {:ok, gif_binary, saved_gif}
-
-                      {:error, _reason} ->
-                        # Still return the GIF even if saving failed
-                        {:ok, gif_binary, nil}
-                    end
-
-                  {:error, reason} ->
-                    {:error, reason}
-                end
-              end)
-
-            socket =
-              socket
-              |> assign(:gif_generation_status, :generating)
-              |> assign(:gif_generation_task, task)
-              |> assign(:generated_gif_data, nil)
-
-            {:noreply, socket}
-        end
-    end
-  end
-
-  def handle_event("reset_gif_generation", _params, socket) do
-    socket =
-      socket
-      |> assign(:gif_generation_status, nil)
-      |> assign(:generated_gif_data, nil)
-
-    {:noreply, socket}
-  end
-
-  def handle_event("random_gif", _params, socket) do
-    case NathanForUs.Video.get_random_video_sequence(15) do
-      {:ok, video_id, start_frame} ->
-        # Generate a range of 15 frame indices starting from the random frame
-        frame_indices = Enum.to_list(0..14)
-        indices_param = Enum.join(frame_indices, ",")
-
-        # Navigate to the video timeline with pre-selected frames
-        path =
-          ~p"/video/#{video_id}?random=true&start_frame=#{start_frame}&selected_indices=#{indices_param}"
-
-        socket = redirect(socket, to: path)
-        {:noreply, socket}
-
-      {:error, _reason} ->
-        socket = put_flash(socket, :error, "No suitable videos found for random GIF generation")
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("close_posted_success_flash", _params, socket) do
-    socket = assign(socket, :show_posted_success_flash, false)
-    {:noreply, socket}
-  end
-
-  def handle_event("post_to_timeline", _params, socket) do
-    # Only allow authenticated users
-    if socket.assigns[:current_user] do
-      # Only allow posting if GIF is generated and cached
-      if socket.assigns.gif_generation_status == :completed and socket.assigns.generated_gif_data do
-        selected_frames = get_selected_frames(socket)
-        video = socket.assigns.video
-        user = socket.assigns.current_user
-
-        # Mark the generated GIF as posted to the public timeline
-        case post_gif_to_timeline(selected_frames, video, user) do
+      true ->
+        case Viral.post_browseable_gif_to_timeline(browseable_gif_id, user.id, title) do
           {:ok, _browseable_gif} ->
             socket =
               socket
-              |> assign(:show_posted_success_flash, true)
-              |> assign(:gif_generation_status, nil)
-              |> assign(:generated_gif_data, nil)
+              |> assign(:posted_to_timeline, true)
+              |> assign(:show_post_form, false)
+              |> assign(:post_error, nil)
 
             {:noreply, socket}
 
-          {:error, _reason} ->
-            socket = put_flash(socket, :error, "Failed to post GIF to timeline")
-            {:noreply, socket}
+          {:error, reason} ->
+            {:noreply, assign(socket, :post_error, post_error_message(reason))}
         end
-      else
-        socket = put_flash(socket, :error, "Please generate a GIF first before posting")
-        {:noreply, socket}
-      end
-    else
-      socket = put_flash(socket, :error, "Please log in to post to timeline")
-      {:noreply, socket}
     end
   end
 
-  def handle_info({:load_frames_at_position, position}, socket) do
-    # Only load if this is the current position (debouncing)
-    if position == socket.assigns.timeline_position do
-      socket = assign(socket, :loading_frames, true)
+  # ── handle_info ─────────────────────────────────────────────────────────
 
-      # If caption filtered, don't load new frames - keep the filtered ones
-      if socket.assigns.is_caption_filtered do
-        socket =
-          socket
-          |> assign(:current_frames, socket.assigns.caption_filtered_frames)
-          |> assign(:loading_frames, false)
-          # Clear selection when moving
-          |> assign(:selected_frame_indices, [])
+  def handle_info({:run_caption_search, term}, socket) do
+    if term == socket.assigns.caption_search_term do
+      frames = Video.get_video_frames_with_caption_text(socket.assigns.video.id, term)
 
-        {:noreply, socket}
-      else
-        # Normal timeline navigation - load frames in range
-        frame_count = socket.assigns.frame_count
-        frames_per_view = socket.assigns.frames_per_view
+      results =
+        Enum.map(frames, fn frame ->
+          %{
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            text: Map.get(frame, :caption_texts) || ""
+          }
+        end)
 
-        # Convert position (0.0-1.0) to frame range
-        start_frame = round(position * (frame_count - frames_per_view))
-        start_frame = max(0, start_frame)
-
-        end_frame = min(start_frame + frames_per_view - 1, frame_count - 1)
-
-        # Load frames in this range
-        frames =
-          NathanForUs.Video.get_video_frames_in_range(
-            socket.assigns.video.id,
-            start_frame,
-            end_frame
-          )
-
-        socket =
-          socket
-          |> assign(:current_frames, frames)
-          |> assign(:loading_frames, false)
-          # Clear selection when moving
-          |> assign(:selected_frame_indices, [])
-
-        {:noreply, socket}
-      end
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_info(:advance_timeline, socket) do
-    if socket.assigns.timeline_playing do
-      # Calculate how much to advance based on playback speed
-      # Advance by 1 frame worth of time
-      frame_count = socket.assigns.frame_count
-
-      if frame_count > 0 do
-        frame_duration = 1.0 / frame_count
-        speed_multiplier = socket.assigns.playback_speed
-        advancement = frame_duration * speed_multiplier
-
-        new_position = socket.assigns.timeline_position + advancement
-
-        if new_position >= 1.0 do
-          # Reached end, stop playback
-          socket = assign(socket, :timeline_playing, false)
-          {:noreply, socket}
-        else
-          socket = assign(socket, :timeline_position, new_position)
-          send(self(), {:load_frames_at_position, new_position})
-
-          # Schedule next advancement
-          Process.send_after(self(), :advance_timeline, 100)
-
-          {:noreply, socket}
-        end
-      else
-        {:noreply, socket}
-      end
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_info({:auto_search_from_params, search_term}, socket) do
-    # Automatically perform caption search with the URL parameter
-    # Only proceed if video is loaded
-    if Map.has_key?(socket.assigns, :video) && socket.assigns.video do
-      video_id = socket.assigns.video.id
-
-      filtered_frames =
-        NathanForUs.Video.get_video_frames_with_caption_text(video_id, search_term)
+      match_idxs =
+        results
+        |> Enum.map(&Map.get(socket.assigns.index_by_number, &1.frame_number))
+        |> Enum.reject(&is_nil/1)
 
       socket =
         socket
-        |> assign(:caption_filtered_frames, filtered_frames)
-        |> assign(:is_caption_filtered, true)
-        |> assign(:current_frames, filtered_frames)
         |> assign(:caption_loading, false)
-        |> assign(:show_caption_autocomplete, false)
-        |> assign(:selected_frame_indices, [])
-        # Reset context view
-        |> assign(:is_context_view, false)
-        |> assign(:context_frames, [])
-        |> assign(:context_target_frame, nil)
+        |> assign(:caption_searched, true)
+        |> assign(:caption_results_open, true)
+        |> assign(:caption_results, Enum.take(results, @max_caption_results))
+        |> assign(:caption_result_count, length(results))
+        |> assign(:caption_match_idxs, match_idxs)
 
       {:noreply, socket}
     else
-      # Video not loaded yet, reschedule the search
-      Process.send_after(self(), {:auto_search_from_params, search_term}, 100)
+      # A newer search superseded this one
       {:noreply, socket}
     end
   end
 
-  def handle_info({:auto_search_from_params, search_term, context_frame_number}, socket) do
-    # Automatically perform caption search and then load context for the specified frame
-    # Only proceed if video is loaded
-    if Map.has_key?(socket.assigns, :video) && socket.assigns.video do
-      video_id = socket.assigns.video.id
-
-      filtered_frames =
-        NathanForUs.Video.get_video_frames_with_caption_text(video_id, search_term)
-
-      # Find the target frame in the filtered results
-      target_frame =
-        Enum.find(filtered_frames, fn frame -> frame.frame_number == context_frame_number end)
-
-      if target_frame do
-        # Load context frames around this frame
-        context_frames =
-          NathanForUs.Video.get_frames_with_context(video_id, target_frame.frame_number, 5, 5)
-
-        socket =
-          socket
-          |> assign(:caption_filtered_frames, filtered_frames)
-          |> assign(:is_caption_filtered, true)
-          |> assign(:context_frames, context_frames)
-          |> assign(:is_context_view, true)
-          |> assign(:context_target_frame, target_frame)
-          |> assign(:current_frames, context_frames)
-          |> assign(:caption_loading, false)
-          |> assign(:show_caption_autocomplete, false)
-          |> assign(:selected_frame_indices, [])
-          |> load_selected_frame_captions()
-
-        {:noreply, socket}
-      else
-        # Target frame not found in search results, fall back to regular search
-        send(self(), {:auto_search_from_params, search_term})
-        {:noreply, socket}
-      end
-    else
-      # Video not loaded yet, reschedule the search
-      Process.send_after(
-        self(),
-        {:auto_search_from_params, search_term, context_frame_number},
-        100
-      )
-
-      {:noreply, socket}
-    end
-  end
-
-  def handle_info({ref, result}, socket) do
-    # Handle server-side GIF generation task completion
+  def handle_info({ref, {:gif_result, result}}, socket) do
     if socket.assigns[:gif_generation_task] && socket.assigns.gif_generation_task.ref == ref do
       Process.demonitor(ref, [:flush])
 
-      case result do
-        {:ok, gif_binary, saved_gif} ->
-          # Convert binary data to base64 for embedding
-          gif_base64 = Base.encode64(gif_binary)
-
-          {cache_status, from_cache} =
-            case saved_gif do
-              nil -> {"Generated fresh (save to DB failed)", false}
-              gif -> {"Generated fresh, saved to DB (ID: #{gif.id})", false}
-            end
-
-          socket =
+      socket =
+        case result do
+          {:ok,
+           %{gif_id: gif_id, browseable_gif_id: browseable_gif_id, fallback_base64: fallback}} ->
             socket
             |> assign(:gif_generation_status, :completed)
-            |> assign(:generated_gif_data, gif_base64)
             |> assign(:gif_generation_task, nil)
-            |> assign(:gif_from_cache, from_cache)
-            |> assign(:gif_cache_status, cache_status)
+            |> assign(:generated_gif_id, gif_id)
+            |> assign(:generated_browseable_gif_id, browseable_gif_id)
+            |> assign(:generated_gif_data, fallback)
 
-          {:noreply, socket}
+          {:error, reason} ->
+            Logger.warning("GIF generation failed: #{inspect(reason)}")
 
-        {:error, _reason} ->
-          socket =
             socket
-            |> assign(:gif_generation_status, nil)
+            |> assign(:gif_generation_status, :failed)
             |> assign(:gif_generation_task, nil)
-
-          {:noreply, socket}
-      end
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket) do
-    # Handle server-side GIF generation task crash
-    if socket.assigns[:gif_generation_task] && socket.assigns.gif_generation_task.ref == ref do
-      socket =
-        socket
-        |> assign(:gif_generation_status, nil)
-        |> assign(:gif_generation_task, nil)
-
-      {:noreply, socket}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_info({:load_random_sequence, start_frame_num, indices_list}, socket) do
-    # Load frames starting from the specified frame number
-    video_id = socket.assigns.video.id
-    # 15 frames total (0-14 indices)
-    end_frame_num = start_frame_num + 14
-
-    frames = NathanForUs.Video.get_video_frames_in_range(video_id, start_frame_num, end_frame_num)
-
-    # Update timeline position to the start of the sequence
-    frame_count = socket.assigns.frame_count
-    timeline_position = if frame_count > 0, do: start_frame_num / frame_count, else: 0.0
-
-    socket =
-      socket
-      |> assign(:current_frames, frames)
-      |> assign(:selected_frame_indices, indices_list)
-      |> assign(:timeline_position, timeline_position)
-      |> assign(:is_caption_filtered, false)
-      |> assign(:is_context_view, false)
-      |> load_selected_frame_captions()
-
-    # Automatically check if GIF exists for random sequences
-    if length(frames) >= 2 do
-      send(self(), :auto_check_existing_gif)
-    end
-
-    {:noreply, socket}
-  end
-
-  def handle_info(:auto_check_existing_gif, socket) do
-    # Automatically check if GIF exists for the currently selected frames
-    selected_frames = get_selected_frames(socket)
-    video_id = socket.assigns.video.id
-
-    case selected_frames do
-      frames when length(frames) >= 2 ->
-        # Check if GIF already exists
-        case Gif.find_or_prepare(video_id, frames) do
-          {:ok, existing_gif} ->
-            # GIF already exists, load it automatically
-            gif_base64 = Gif.to_base64(existing_gif)
-
-            socket =
-              socket
-              |> assign(:gif_generation_status, :completed)
-              |> assign(:generated_gif_data, gif_base64)
-              |> assign(:gif_generation_task, nil)
-              |> assign(:gif_from_cache, true)
-              |> assign(
-                :gif_cache_status,
-                "Automatically loaded from database cache (ID: #{existing_gif.id})"
-              )
-
-            {:noreply, socket}
-
-          {:generate, _hash, _frame_ids} ->
-            # GIF doesn't exist yet, just show preview
-            {:noreply, socket}
+            |> assign(:gif_error, humanize_generation_error(reason))
         end
 
-      _ ->
-        {:noreply, socket}
+      {:noreply, socket}
+    else
+      {:noreply, socket}
     end
   end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, socket) do
+    if socket.assigns[:gif_generation_task] && socket.assigns.gif_generation_task.ref == ref do
+      Logger.warning("GIF generation task crashed: #{inspect(reason)}")
+
+      socket =
+        socket
+        |> assign(:gif_generation_status, :failed)
+        |> assign(:gif_generation_task, nil)
+        |> assign(:gif_error, "The encoder crashed unexpectedly.")
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:gif_generation_timeout, ref}, socket) do
+    task = socket.assigns[:gif_generation_task]
+
+    if task && task.ref == ref && socket.assigns.gif_generation_status == :generating do
+      Task.shutdown(task, :brutal_kill)
+
+      socket =
+        socket
+        |> assign(:gif_generation_status, :failed)
+        |> assign(:gif_generation_task, nil)
+        |> assign(:gif_error, "Timed out after 60 seconds.")
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  # ── Render ──────────────────────────────────────────────────────────────
 
   def render(assigns) do
     ~H"""
-    <div
-      class="min-h-screen bg-gray-900 text-white"
-      phx-hook="TimelineTutorial"
-      id="timeline-container"
-    >
-      <!-- Header -->
-      <div class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h1 class="text-2xl font-bold font-mono">{@video.title}</h1>
-            <p class="text-gray-400 text-sm font-mono">
-              Timeline Browser • {@frame_count} frames • {format_duration(@video_duration_ms)}
-            </p>
-          </div>
-
-          <div class="flex items-center gap-4">
-            <.link
-              navigate={~p"/"}
-              class="text-blue-400 hover:text-blue-300 font-mono font-medium text-sm px-4 py-2"
-            >
-              ← Back to search
-            </.link>
-
-            <.link
-              navigate={~p"/timeline"}
-              class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded font-mono font-medium transition-colors text-sm"
-            >
-              PUBLIC TIMELINE
-            </.link>
-
-            <.link
-              navigate={~p"/gifs"}
-              class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-mono font-medium transition-colors text-sm"
-            >
-              BROWSE GIFS
-            </.link>
-
-            <button
-              phx-click="random_gif"
-              class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-mono font-medium transition-colors text-sm"
-              title="Generate random GIF from any video"
-            >
-              🎲 Random GIF
-            </button>
-
-            <button
-              phx-click="reload_all_frames"
-              class={[
-                "text-white px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
-                if(@is_caption_filtered or @is_context_view,
-                  do: "bg-blue-600 hover:bg-blue-700",
-                  else: "bg-gray-600 hover:bg-gray-500"
-                )
-              ]}
-              title={
-                if(@is_caption_filtered or @is_context_view,
-                  do: "Return to full timeline view",
-                  else: "Reload all frames (clear search filter)"
-                )
-              }
-            >
-              <%= if @is_caption_filtered or @is_context_view do %>
-                ← Back to Timeline Editor
-              <% else %>
-                Reload All
-              <% end %>
-            </button>
-          </div>
-        </div>
-      </div>
-
-    <!-- Custom Posted Success Flash -->
-      <%= if @show_posted_success_flash do %>
-        <div class="fixed top-2 right-2 mr-2 w-80 sm:w-96 z-50 rounded-lg p-3 ring-1 bg-emerald-50 text-emerald-800 ring-emerald-500 fill-cyan-900">
-          <p class="flex items-center gap-1.5 text-sm font-semibold leading-6">
-            <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
-              <path
-                fill-rule="evenodd"
-                d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm13.36-1.814a.75.75 0 10-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.14-.094l3.75-5.25z"
-                clip-rule="evenodd"
-              />
-            </svg>
-            Success!
-          </p>
-          <p class="mt-2 text-sm leading-5">
-            GIF posted to the public timeline!
-            <.link navigate={~p"/timeline"} class="font-semibold underline hover:no-underline">
-              View it on the timeline →
-            </.link>
-          </p>
+    <div id="editor-root" phx-hook="KeyboardShortcuts" class="flex min-h-screen flex-col bg-stone-50">
+      <.page_header
+        title={@video.title}
+        subtitle={"#{@frame_count} frames · #{format_duration(@video_duration_ms)}"}
+      >
+        <:actions>
+          <.link navigate={~p"/"} class="btn-ghost px-3 py-1 text-xs">
+            <span class="hero-arrow-left-mini size-4"></span> Library
+          </.link>
           <button
             type="button"
-            class="group absolute top-1 right-1 p-2"
-            phx-click="close_posted_success_flash"
-            aria-label="close"
+            phx-click="toggle_shortcuts"
+            class="btn-ghost px-3 py-1 text-xs"
+            title="Keyboard shortcuts"
+            aria-label="Keyboard shortcuts"
           >
-            <svg
-              class="h-5 w-5 opacity-40 group-hover:opacity-70"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                d="M6 18L18 6M6 6l12 12"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            ?
           </button>
-        </div>
-      <% end %>
+        </:actions>
+      </.page_header>
 
-    <!-- Caption Search -->
-      <div class="px-6">
-        <%= if @has_captions do %>
-          <CaptionSearch.caption_search
-            search_term={@caption_search_term}
-            loading={@caption_loading}
-            video_id={@video.id}
-            autocomplete_suggestions={@caption_autocomplete_suggestions}
-            show_autocomplete={@show_caption_autocomplete}
-            search_form={@caption_search_form}
-            is_filtered={@is_caption_filtered}
-            is_context_view={@is_context_view}
-            context_target_frame={@context_target_frame}
-            expand_count={@expand_count}
-          />
-        <% else %>
-          <div class="bg-gray-800 border border-gray-600 rounded-lg p-4 mb-4">
-            <div class="text-xs text-blue-400 uppercase tracking-wide font-mono mb-2">
-              CAPTION SEARCH
-            </div>
-            <p class="text-gray-400 text-sm font-mono">
-              No captions for this video
-            </p>
+      <GifPreview.stage
+        preview_frames={@preview_frames}
+        fps={@fps}
+        has_range={has_range?(assigns)}
+        readout={selection_readout(assigns)}
+      />
+
+      <GifPreview.generation_panel
+        :if={@gif_generation_status}
+        status={@gif_generation_status}
+        generating_frame_count={@generating_frame_count}
+        error_message={@gif_error}
+        gif_id={@generated_gif_id}
+        fallback_base64={@generated_gif_data}
+        browseable_gif_id={@generated_browseable_gif_id}
+        posted={@posted_to_timeline}
+        show_post_form={@show_post_form}
+        post_title={@post_title}
+        post_error={@post_error}
+        current_user={@current_user}
+      />
+
+      <CaptionSearch.caption_search
+        search_term={@caption_search_term}
+        loading={@caption_loading}
+        results={@caption_results}
+        result_count={@caption_result_count}
+        results_open={@caption_results_open}
+        searched={@caption_searched}
+        has_captions={@has_captions}
+      />
+
+      <FrameDisplay.filmstrip
+        frame_index={@frame_index}
+        frame_count={@frame_count}
+        playhead={@playhead}
+        sel_start={@sel_start}
+        sel_end={@sel_end}
+        caption_match_idxs={@caption_match_idxs}
+      />
+
+      <div class="flex-1"></div>
+
+      <div class="sticky bottom-0 z-30 border-t border-stone-200 bg-white">
+        <div class="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div class="font-mono text-sm text-stone-500">
+            <%= cond do %>
+              <% selection_readout(assigns) -> %>
+                {selection_readout(assigns)}
+              <% selected_count(assigns) == 1 -> %>
+                Select at least 2 frames
+              <% true -> %>
+                No range selected
+            <% end %>
           </div>
-        <% end %>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              phx-click="set_range_point"
+              phx-value-point="in"
+              class="btn-secondary px-3 py-1 text-xs"
+              title="Set in point at playhead (I)"
+            >
+              IN
+            </button>
+            <button
+              type="button"
+              phx-click="set_range_point"
+              phx-value-point="out"
+              class="btn-secondary px-3 py-1 text-xs"
+              title="Set out point at playhead (O)"
+            >
+              OUT
+            </button>
+            <button
+              :if={has_range?(assigns)}
+              type="button"
+              phx-click="clear_range"
+              class="btn-ghost"
+              title="Clear range (Esc)"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              phx-click="generate_gif"
+              disabled={selected_count(assigns) < 2 or @gif_generation_status == :generating}
+              class="btn-primary"
+              title={
+                if selected_count(assigns) < 2,
+                  do: "Select at least 2 frames",
+                  else: "Generate GIF (Enter)"
+              }
+            >
+              GENERATE GIF
+            </button>
+          </div>
+        </div>
       </div>
 
-    <!-- Timeline Controls (hidden when searching or in context view) -->
-      <%= unless @is_caption_filtered or @is_context_view do %>
-        <TimelineControls.timeline_controls
-          timeline_position={@timeline_position}
-          timeline_playing={@timeline_playing}
-          playback_speed={@playback_speed}
-          timeline_zoom={@timeline_zoom}
-          frame_count={@frame_count}
-          video_duration_ms={@video_duration_ms}
-        />
-
-    <!-- Timeline Player -->
-        <TimelinePlayer.timeline_player
-          timeline_position={@timeline_position}
-          timeline_zoom={@timeline_zoom}
-          frame_count={@frame_count}
-          video_duration_ms={@video_duration_ms}
-          video={@video}
-        />
-      <% end %>
-
-    <!-- GIF Preview (shows when frames are selected) -->
-      <GifPreview.gif_preview
-        current_frames={@current_frames}
-        selected_frame_indices={@selected_frame_indices}
-        gif_generation_status={@gif_generation_status}
-        generated_gif_data={@generated_gif_data}
-        is_admin={@is_admin}
-        gif_cache_status={@gif_cache_status}
-        gif_from_cache={@gif_from_cache}
-        current_user={@current_user}
-        video_id={@video.id}
-        selected_frame_captions={@selected_frame_captions}
-      />
-
-    <!-- Random Selection Controls (show when in random selection mode) -->
-      <%= if @is_random_selection do %>
-        <div class="px-6 py-4 bg-gray-800 border-b border-gray-700">
-          <div class="flex items-center justify-between">
-            <div>
-              <h3 class="text-lg font-bold font-mono text-purple-400 mb-2">
-                🎲 Random Selection Mode
-              </h3>
-              <p class="text-gray-400 text-sm font-mono">
-                Selected {length(@selected_frame_indices)} frames starting from frame #{@random_start_frame}
-              </p>
-            </div>
-
-            <div class="flex items-center gap-4">
-              <div class="flex items-center gap-2">
-                <label class="text-gray-300 text-sm font-mono">Expand by:</label>
-                <select
-                  phx-change="update_expand_count"
-                  name="expand_count"
-                  class="bg-gray-700 border border-gray-600 text-white px-2 py-1 rounded text-sm font-mono"
-                >
-                  <%= for count <- [1, 2, 3, 5, 10] do %>
-                    <option value={count} selected={@expand_count == count}>{count} frames</option>
-                  <% end %>
-                </select>
-              </div>
-
-              <button
-                phx-click="expand_random_left"
-                class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded font-mono text-sm transition-colors"
-                title="Add frames to the left"
-              >
-                ← Add Left
-              </button>
-
-              <button
-                phx-click="expand_random_right"
-                class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded font-mono text-sm transition-colors"
-                title="Add frames to the right"
-              >
-                Add Right →
-              </button>
-
-              <button
-                phx-click="clear_random_selection"
-                class="bg-gray-600 hover:bg-gray-500 text-white px-3 py-2 rounded font-mono text-sm transition-colors"
-                title="Exit random selection mode"
-              >
-                Clear
-              </button>
-            </div>
+      <div
+        :if={@show_shortcuts}
+        class="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/40 p-4"
+      >
+        <div
+          class="card w-full max-w-md p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard shortcuts"
+          phx-click-away="close_shortcuts"
+        >
+          <div class="mb-4 flex items-center justify-between">
+            <h2 class="font-mono text-sm font-bold uppercase tracking-wider text-stone-900">
+              Keyboard shortcuts
+            </h2>
+            <button
+              type="button"
+              phx-click="close_shortcuts"
+              class="p-1 text-stone-400 hover:text-stone-700"
+              aria-label="Close"
+            >
+              <span class="hero-x-mark-mini size-5"></span>
+            </button>
           </div>
-        </div>
-      <% end %>
-
-    <!-- Frame Display -->
-      <FrameDisplay.frame_display
-        current_frames={@current_frames}
-        loading_frames={@loading_frames}
-        selected_frame_indices={@selected_frame_indices}
-        timeline_position={@timeline_position}
-        is_context_view={@is_context_view}
-        is_caption_filtered={@is_caption_filtered}
-        expand_count={@expand_count}
-      />
-
-    <!-- Tutorial Modal -->
-      <%= if @show_tutorial_modal do %>
-        <div class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
-          <div class="bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto border border-gray-600">
-            <div class="p-8">
-              <div class="flex items-center justify-between mb-6">
-                <h2 class="text-2xl font-bold font-mono text-blue-400">
-                  Welcome to Timeline Browser
-                </h2>
-                <button
-                  phx-click="close_tutorial_modal"
-                  class="text-gray-400 hover:text-white transition-colors"
+          <dl class="space-y-2 font-mono text-sm">
+            <div
+              :for={{keys, action} <- shortcut_rows()}
+              class="flex items-center justify-between gap-4"
+            >
+              <dt class="flex shrink-0 gap-1">
+                <kbd
+                  :for={key <- keys}
+                  class="rounded border border-stone-300 bg-stone-100 px-1.5 py-0.5 text-xs text-stone-700"
                 >
-                  <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M6 18L18 6M6 6l12 12"
-                    >
-                    </path>
-                  </svg>
-                </button>
-              </div>
-
-              <div class="space-y-6 text-gray-200">
-                <div class="flex items-start gap-4">
-                  <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
-                    1
-                  </div>
-                  <div>
-                    <h3 class="text-lg font-semibold mb-2 text-white">Navigate with the Timeline</h3>
-                    <p class="leading-relaxed">
-                      Drag the scrubber along the timeline to jump to any point in the video. Click anywhere on the timeline track to jump directly to that position. Use the zoom controls to get more precise control over smaller sections.
-                    </p>
-                  </div>
-                </div>
-
-                <div class="flex items-start gap-4">
-                  <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
-                    2
-                  </div>
-                  <div>
-                    <h3 class="text-lg font-semibold mb-2 text-white">Playback Controls</h3>
-                    <p class="leading-relaxed">
-                      Use the play/pause button to automatically advance through the timeline. When playing, it cycles through frames at your selected speed (0.25x to 4x). The play button will automatically pause when it reaches the end of the video or when you interact with the timeline. The current frame position and timestamp are always displayed.
-                    </p>
-                  </div>
-                </div>
-
-                <div class="flex items-start gap-4">
-                  <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
-                    4
-                  </div>
-                  <div>
-                    <h3 class="text-lg font-semibold mb-2 text-white">Search</h3>
-                    <p class="leading-relaxed">
-                      Search captions at the top to jump to specific moments in the video
-                    </p>
-                  </div>
-                </div>
-
-                <div class="flex items-start gap-4">
-                  <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
-                    5
-                  </div>
-                  <div>
-                    <h3 class="text-lg font-semibold mb-2 text-white">Contextual View</h3>
-                    <p class="leading-relaxed">
-                      Click a frame's image and get a contextual view to load frames before/after what you have and create a sequence
-                    </p>
-                  </div>
-                </div>
-                <div class="flex items-start gap-4">
-                  <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm">
-                    6
-                  </div>
-                  <div>
-                    <h3 class="text-lg font-semibold mb-2 text-white">Click and Draft</h3>
-                    <p class="leading-relaxed">
-                      Click and drag or click and then hold shift and click again for multi frame selection
-                    </p>
-                  </div>
-                </div>
-
-                <div class="bg-gray-700 p-4 rounded-lg mt-6">
-                  <h4 class="font-semibold text-white mb-2">💡 Pro Tips</h4>
-                  <ul class="text-sm space-y-1 text-gray-300">
-                    <li>• Click on any frame to open it in a larger modal view</li>
-                    <li>• Use keyboard shortcuts: Space to play/pause, arrow keys to scrub</li>
-                    <li>• The timeline shows your current position as a percentage and timestamp</li>
-                    <li>• Zoom in on interesting sections for frame-perfect selection</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div class="flex justify-end mt-8">
-                <button
-                  phx-click="close_tutorial_modal"
-                  phx-hook="TimelineTutorialButton"
-                  id="tutorial-got-it-btn"
-                  class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-mono font-medium transition-colors"
-                >
-                  Got it!
-                </button>
-              </div>
+                  {key}
+                </kbd>
+              </dt>
+              <dd class="text-right text-stone-500">{action}</dd>
             </div>
-          </div>
+          </dl>
         </div>
-      <% end %>
-
-    <!-- Frame Modal -->
-      <%= if @show_frame_modal and @modal_frame do %>
-        <div class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-          <div class="bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div class="p-6">
-              <div class="flex items-center justify-between mb-4">
-                <h3 class="text-lg font-bold font-mono">Frame #{@modal_frame.frame_number}</h3>
-                <button phx-click="close_frame_modal" class="text-gray-400 hover:text-white">
-                  <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M6 18L18 6M6 6l12 12"
-                    >
-                    </path>
-                  </svg>
-                </button>
-              </div>
-
-              <div class="text-center">
-                <%= if @modal_frame.image_data do %>
-                  <img
-                    src={"data:image/jpeg;base64,#{encode_frame_image(@modal_frame.image_data)}"}
-                    alt={"Frame ##{@modal_frame.frame_number}"}
-                    class="max-w-full max-h-96 mx-auto rounded"
-                  />
-                <% else %>
-                  <div class="bg-gray-700 h-64 flex items-center justify-center rounded">
-                    <span class="text-gray-400">No image data</span>
-                  </div>
-                <% end %>
-
-                <div class="mt-4 text-sm font-mono text-gray-300">
-                  <p>Timestamp: {format_timestamp(@modal_frame.timestamp_ms)}</p>
-                  <%= if @modal_frame.width != nil and @modal_frame.height != nil do %>
-                    <p>Resolution: {@modal_frame.width}x{@modal_frame.height}</p>
-                  <% end %>
-                </div>
-
-    <!-- Frame Captions -->
-                <%= if length(@modal_frame_captions) > 0 do %>
-                  <div class="mt-6 bg-gray-700 rounded-lg p-4">
-                    <h4 class="text-sm font-bold text-blue-400 mb-3 uppercase tracking-wide">
-                      Captions
-                    </h4>
-                    <div class="space-y-2">
-                      <%= for caption <- @modal_frame_captions do %>
-                        <div class="bg-gray-600 rounded p-3 text-left">
-                          <p class="text-gray-200 text-sm leading-relaxed">{caption}</p>
-                        </div>
-                      <% end %>
-                    </div>
-                  </div>
-                <% else %>
-                  <div class="mt-6 bg-gray-700 rounded-lg p-4">
-                    <h4 class="text-sm font-bold text-blue-400 mb-3 uppercase tracking-wide">
-                      Captions
-                    </h4>
-                    <p class="text-gray-400 text-sm italic">No captions found for this frame</p>
-                  </div>
-                <% end %>
-              </div>
-            </div>
-          </div>
-        </div>
-      <% end %>
+      </div>
     </div>
     """
   end
 
-  # Helper functions
+  defp shortcut_rows do
+    [
+      {["←", "→"], "Move playhead ±1 frame (Shift: ±10)"},
+      {["I"], "Set range in-point at playhead"},
+      {["O"], "Set range out-point at playhead"},
+      {["Space"], "Play / pause the preview"},
+      {["Enter", "G"], "Generate GIF"},
+      {["Esc"], "Clear range / close this overlay"},
+      {["?"], "Show this overlay"}
+    ]
+  end
 
-  # Load captions for selected frames
-  defp load_selected_frame_captions(socket) do
-    selected_frames = get_selected_frames(socket)
+  # ── Selection helpers ───────────────────────────────────────────────────
 
-    frame_captions =
-      Enum.map(selected_frames, fn frame ->
-        captions = NathanForUs.Video.get_frame_captions(frame.id)
+  defp has_range?(%{sel_start: sel_start, sel_end: sel_end}) do
+    is_integer(sel_start) and is_integer(sel_end)
+  end
 
+  defp selected_count(%{sel_start: sel_start, sel_end: sel_end}) do
+    if is_integer(sel_start) and is_integer(sel_end), do: sel_end - sel_start + 1, else: 0
+  end
+
+  defp selection_readout(%{sel_start: sel_start, sel_end: sel_end} = assigns) do
+    count = selected_count(assigns)
+
+    if count >= 2 do
+      first = Enum.at(assigns.frame_index, sel_start)
+      last = Enum.at(assigns.frame_index, sel_end)
+      seconds = Float.round(count / assigns.fps, 1)
+
+      "Frames #{first.frame_number}–#{last.frame_number} · #{count} frames · #{seconds}s"
+    end
+  end
+
+  defp selection_frames(socket) do
+    %{sel_start: sel_start, sel_end: sel_end, frame_index: frame_index} = socket.assigns
+
+    if is_integer(sel_start) and is_integer(sel_end) do
+      Enum.slice(frame_index, sel_start..sel_end)
+    else
+      []
+    end
+  end
+
+  defp clear_range(socket) do
+    socket
+    |> assign(:sel_start, nil)
+    |> assign(:sel_end, nil)
+    |> refresh_preview()
+  end
+
+  defp set_range_point(socket, point) do
+    %{playhead: playhead, sel_start: sel_start, sel_end: sel_end} = socket.assigns
+
+    {sel_start, sel_end} =
+      case point do
+        "in" ->
+          if is_integer(sel_end) and sel_end >= playhead,
+            do: {playhead, sel_end},
+            else: {playhead, playhead}
+
+        "out" ->
+          if is_integer(sel_start) and sel_start <= playhead,
+            do: {sel_start, playhead},
+            else: {playhead, playhead}
+      end
+
+    socket
+    |> assign(:sel_start, sel_start)
+    |> assign(:sel_end, sel_end)
+    |> refresh_preview()
+  end
+
+  defp jump_playhead_to_frame_number(socket, frame_number, opts \\ []) do
+    case Map.get(socket.assigns.index_by_number, frame_number) do
+      nil ->
+        socket
+
+      idx ->
+        socket = socket |> assign(:playhead, idx) |> refresh_preview()
+
+        if Keyword.get(opts, :scroll, true) do
+          push_event(socket, "filmstrip:scroll_to", %{index: idx})
+        else
+          socket
+        end
+    end
+  end
+
+  # Frames shown in the stage preview: the selected range, or the playhead
+  # frame when no range is set. Captions come from one batched query.
+  defp refresh_preview(socket) do
+    frames =
+      case selection_frames(socket) do
+        [] ->
+          case Enum.at(socket.assigns.frame_index, socket.assigns.playhead) do
+            nil -> []
+            frame -> [frame]
+          end
+
+        frames ->
+          frames
+      end
+
+    captions_by_id =
+      case frames do
+        [] -> %{}
+        frames -> Video.get_frame_captions_for_ids(Enum.map(frames, & &1.id))
+      end
+
+    preview_frames =
+      Enum.map(frames, fn frame ->
         %{
-          frame_id: frame.id,
-          frame_number: frame.frame_number,
-          timestamp_ms: frame.timestamp_ms,
-          captions: captions
+          id: frame.id,
+          url: ~p"/frame/#{frame.id}",
+          caption: captions_by_id |> Map.get(frame.id, []) |> Enum.join(" ")
         }
       end)
 
-    assign(socket, :selected_frame_captions, frame_captions)
+    assign(socket, :preview_frames, preview_frames)
   end
 
-  # Lightweight check for whether the video has any captions at all
-  defp video_has_captions?(video_id) do
-    import Ecto.Query, only: [from: 2]
+  # ── Caption search ──────────────────────────────────────────────────────
 
-    Repo.exists?(from c in NathanForUs.Video.VideoCaption, where: c.video_id == ^video_id)
-  end
+  defp run_caption_search(socket, term) do
+    term = String.trim(term)
+    socket = assign(socket, :caption_search_term, term)
 
-  # Check if current user is admin
-  defp is_admin?(socket) do
-    case Map.get(socket.assigns, :current_user) do
-      nil -> false
-      user -> AdminService.validate_admin_access(user) == :ok
-    end
-  end
+    if String.length(term) >= 3 do
+      send(self(), {:run_caption_search, term})
 
-  # Get selected frames based on current indices
-  defp get_selected_frames(socket) do
-    socket.assigns.selected_frame_indices
-    |> Enum.map(&Enum.at(socket.assigns.current_frames, &1))
-    |> Enum.reject(&is_nil/1)
-  end
-
-  # Mark the already-generated GIF's browseable entry as posted to the timeline
-  defp post_gif_to_timeline(frames, video, user) do
-    if length(frames) >= 2 do
-      frame_ids = Enum.map(frames, & &1.id)
-      hash = NathanForUs.Gif.generate_hash(video.id, frame_ids)
-
-      case NathanForUs.Gif.find_by_hash(hash) do
-        nil ->
-          {:error, :gif_not_found}
-
-        gif ->
-          NathanForUs.Viral.post_gif_to_timeline(gif.id, user.id)
-      end
+      socket
+      |> assign(:caption_loading, true)
+      |> assign(:caption_results_open, true)
     else
-      {:error, :insufficient_frames}
+      socket
+      |> assign(:caption_loading, false)
+      |> assign(:caption_results, [])
+      |> assign(:caption_result_count, 0)
+      |> assign(:caption_results_open, false)
+      |> assign(:caption_searched, false)
+      |> assign(:caption_match_idxs, [])
     end
   end
 
-  # Create browseable GIF from generation (automatically called on every GIF generation)
-  defp create_browseable_gif_from_generation(frames, video, user, saved_gif) do
-    if length(frames) >= 2 do
-      first_frame = List.first(frames)
-      last_frame = List.last(frames)
-      category = nil
+  # ── GIF generation ──────────────────────────────────────────────────────
+
+  defp reset_generation_assigns(socket) do
+    socket
+    |> assign(:gif_generation_status, nil)
+    |> assign(:gif_generation_task, nil)
+    |> assign(:generating_frame_count, 0)
+    |> assign(:gif_error, nil)
+    |> assign(:generated_gif_id, nil)
+    |> assign(:generated_browseable_gif_id, nil)
+    |> assign(:generated_gif_data, nil)
+    |> assign(:posted_to_timeline, false)
+    |> assign(:show_post_form, false)
+    |> assign(:post_title, "")
+    |> assign(:post_error, nil)
+  end
+
+  defp start_generation(socket) do
+    frames = selection_frames(socket)
+
+    cond do
+      socket.assigns.gif_generation_status == :generating ->
+        socket
+
+      length(frames) < 2 ->
+        socket
+
+      true ->
+        video = socket.assigns.video
+        user = socket.assigns[:current_user]
+        fps = socket.assigns.fps
+
+        socket = reset_generation_assigns(socket)
+
+        case Gif.find_or_prepare(video.id, frames, fps) do
+          {:ok, existing_gif} ->
+            browseable = ensure_browseable_gif(existing_gif, video, user, frames)
+
+            socket
+            |> assign(:gif_generation_status, :completed)
+            |> assign(:generated_gif_id, existing_gif.id)
+            |> assign(:generated_browseable_gif_id, browseable && browseable.id)
+
+          {:generate, hash, frame_ids} ->
+            task =
+              Task.async(fn -> run_generation(hash, video, user, frames, frame_ids, fps) end)
+
+            Process.send_after(
+              self(),
+              {:gif_generation_timeout, task.ref},
+              @generation_timeout_ms
+            )
+
+            socket
+            |> assign(:gif_generation_status, :generating)
+            |> assign(:gif_generation_task, task)
+            |> assign(:generating_frame_count, length(frames))
+        end
+    end
+  end
+
+  # Runs inside a Task: loads the heavy frame binaries (kept out of socket
+  # assigns), encodes with ffmpeg at the chosen fps, saves, and creates the
+  # (private) browseable draft record.
+  defp run_generation(hash, video, user, frames_meta, frame_ids, fps) do
+    full_frames =
+      from(f in VideoFrame, where: f.id in ^frame_ids, order_by: f.frame_number)
+      |> Repo.all()
+
+    indices = Enum.to_list(0..(length(full_frames) - 1)//1)
+
+    case AdminService.generate_gif_from_frames(%{sequence_frames: full_frames}, indices, fps: fps) do
+      {:ok, gif_binary} ->
+        case Gif.save_generated_gif(hash, video.id, frame_ids, gif_binary) do
+          {:ok, saved_gif} ->
+            browseable =
+              create_browseable_gif_from_generation(frames_meta, video, user, saved_gif)
+
+            {:gif_result,
+             {:ok,
+              %{
+                gif_id: saved_gif.id,
+                browseable_gif_id: browseable && browseable.id,
+                fallback_base64: nil
+              }}}
+
+          {:error, reason} ->
+            Logger.warning("Saving generated GIF failed: #{inspect(reason)}")
+
+            {:gif_result,
+             {:ok,
+              %{
+                gif_id: nil,
+                browseable_gif_id: nil,
+                fallback_base64: Base.encode64(gif_binary)
+              }}}
+        end
+
+      {:error, reason} ->
+        {:gif_result, {:error, reason}}
+    end
+  end
+
+  # Generated drafts are PRIVATE (is_public: false) — nothing appears in the
+  # public feed until the user explicitly posts it.
+  defp create_browseable_gif_from_generation(frames_meta, video, user, saved_gif) do
+    if length(frames_meta) >= 2 do
+      first_frame = List.first(frames_meta)
+      last_frame = List.last(frames_meta)
 
       frame_data =
         Jason.encode!(%{
-          frame_ids: Enum.map(frames, & &1.id),
-          frame_numbers: Enum.map(frames, & &1.frame_number),
-          timestamps: Enum.map(frames, & &1.timestamp_ms)
+          frame_ids: Enum.map(frames_meta, & &1.id),
+          frame_numbers: Enum.map(frames_meta, & &1.frame_number),
+          timestamps: Enum.map(frames_meta, & &1.timestamp_ms)
         })
 
       attrs = %{
         video_id: video.id,
-        # Allow anonymous for now
         created_by_user_id: user && user.id,
         gif_id: saved_gif.id,
         start_frame_index: first_frame.frame_number,
         end_frame_index: last_frame.frame_number,
-        category: category,
+        category: nil,
         frame_data: frame_data,
-        title: NathanForUs.Viral.BrowseableGif.generate_title(category, video.title),
-        is_public: true
+        title: BrowseableGif.generate_title(nil, video.title),
+        is_public: false
       }
 
-      # Don't fail the main flow if this fails
-      case NathanForUs.Viral.create_browseable_gif(attrs) do
-        {:ok, _browseable_gif} -> :ok
-        {:error, _reason} -> :ok
+      case Viral.create_browseable_gif(attrs) do
+        {:ok, browseable_gif} ->
+          browseable_gif
+
+        {:error, reason} ->
+          Logger.warning("Creating browseable GIF draft failed: #{inspect(reason)}")
+          nil
       end
     end
   end
 
-  defp format_duration(nil), do: "Unknown duration"
+  # On a dedup cache hit, reuse this user's existing draft for the GIF (or
+  # create one) so posting always goes by browseable_gif_id.
+  defp ensure_browseable_gif(gif, video, user, frames_meta) do
+    user_id = user && user.id
+
+    base_query =
+      from(b in BrowseableGif, where: b.gif_id == ^gif.id, order_by: [desc: b.id], limit: 1)
+
+    query =
+      if user_id do
+        from(b in base_query, where: b.created_by_user_id == ^user_id)
+      else
+        from(b in base_query, where: is_nil(b.created_by_user_id))
+      end
+
+    case Repo.one(query) do
+      nil -> create_browseable_gif_from_generation(frames_meta, video, user, gif)
+      browseable_gif -> browseable_gif
+    end
+  end
+
+  defp default_post_title(socket) do
+    caption =
+      socket.assigns.preview_frames
+      |> Enum.map(& &1.caption)
+      |> Enum.find(&(&1 != "" and not is_nil(&1)))
+
+    case caption do
+      nil -> socket.assigns.video.title || ""
+      caption -> caption |> String.split(" | ") |> List.first() |> String.slice(0, 120)
+    end
+  end
+
+  defp normalize_title(nil), do: nil
+
+  defp normalize_title(title) when is_binary(title) do
+    case String.trim(title) do
+      "" -> nil
+      title -> title
+    end
+  end
+
+  defp post_error_message(:not_found), do: "This GIF no longer exists — regenerate and try again."
+  defp post_error_message(:invalid), do: "This GIF couldn't be posted — regenerate and try again."
+  defp post_error_message(_reason), do: "Couldn't post to the timeline — please try again."
+
+  defp humanize_generation_error(reason) when is_binary(reason) do
+    # ffmpeg errors are long and noisy; keep the first line for the alert
+    reason |> String.split("\n") |> List.first() |> String.slice(0, 200)
+  end
+
+  defp humanize_generation_error(reason), do: inspect(reason)
+
+  # ── Misc helpers ────────────────────────────────────────────────────────
+
+  defp index_by_number(frame_index) do
+    frame_index
+    |> Enum.with_index()
+    |> Map.new(fn {frame, idx} -> {frame.frame_number, idx} end)
+  end
+
+  defp video_has_captions?(video_id) do
+    Repo.exists?(from(c in NathanForUs.Video.VideoCaption, where: c.video_id == ^video_id))
+  end
+
+  defp parse_int(value) when is_integer(value), do: value
+
+  defp parse_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> nil
+    end
+  end
+
+  defp parse_int(value) when is_float(value), do: round(value)
+  defp parse_int(_value), do: nil
+
+  defp clamp(value, min_value, max_value), do: value |> max(min_value) |> min(max_value)
+
+  defp format_duration(nil), do: "0:00"
 
   defp format_duration(ms) when is_integer(ms) do
     total_seconds = div(ms, 1000)
@@ -1636,32 +987,6 @@ defmodule NathanForUsWeb.VideoTimelineLive do
       "#{hours}:#{String.pad_leading(to_string(minutes), 2, "0")}:#{String.pad_leading(to_string(seconds), 2, "0")}"
     else
       "#{minutes}:#{String.pad_leading(to_string(seconds), 2, "0")}"
-    end
-  end
-
-  defp format_timestamp(nil), do: "0:00"
-
-  defp format_timestamp(ms) when is_integer(ms) do
-    total_seconds = div(ms, 1000)
-    minutes = div(total_seconds, 60)
-    seconds = rem(total_seconds, 60)
-    "#{minutes}:#{String.pad_leading(to_string(seconds), 2, "0")}"
-  end
-
-  defp encode_frame_image(nil), do: ""
-
-  defp encode_frame_image(hex_data) when is_binary(hex_data) do
-    case String.starts_with?(hex_data, "\\x") do
-      true ->
-        hex_string = String.slice(hex_data, 2..-1//1)
-
-        case Base.decode16(hex_string, case: :lower) do
-          {:ok, binary_data} -> Base.encode64(binary_data)
-          :error -> ""
-        end
-
-      false ->
-        Base.encode64(hex_data)
     end
   end
 end

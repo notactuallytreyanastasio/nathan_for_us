@@ -84,11 +84,13 @@ defmodule NathanForUs.AdminService do
   Generates a GIF from selected frame sequence using FFMPEG.
 
   Takes a frame sequence and selected frame indices, extracts the frames
-  in order, and creates an animated GIF with appropriate framerate based
-  on the source video's timing.
+  in order, and creates an animated GIF. By default the framerate is derived
+  from the source video's frame timestamps; pass `fps: n` in `opts` to render
+  at an explicit framerate instead (used by the editor's speed control).
   """
-  @spec generate_gif_from_frames(map(), list()) :: {:ok, binary()} | {:error, String.t()}
-  def generate_gif_from_frames(frame_sequence, selected_frame_indices) do
+  @spec generate_gif_from_frames(map(), list(), keyword()) ::
+          {:ok, binary()} | {:error, String.t()}
+  def generate_gif_from_frames(frame_sequence, selected_frame_indices, opts \\ []) do
     try do
       # Validate inputs
       if Enum.empty?(selected_frame_indices) do
@@ -105,8 +107,14 @@ defmodule NathanForUs.AdminService do
           frame_paths =
             extract_selected_frames_to_temp(frame_sequence, selected_frame_indices, temp_dir)
 
-          # Calculate framerate from video metadata or timestamps
-          framerate = calculate_gif_framerate(frame_sequence, selected_frame_indices)
+          # Use the explicitly requested framerate, or calculate one from
+          # video metadata / timestamps to match the source timing.
+          framerate =
+            case Keyword.get(opts, :fps) do
+              nil -> calculate_gif_framerate(frame_sequence, selected_frame_indices)
+              fps when is_number(fps) and fps > 0 -> fps * 1.0
+              _ -> calculate_gif_framerate(frame_sequence, selected_frame_indices)
+            end
 
           # Generate GIF using FFMPEG
           generate_gif_with_ffmpeg(frame_paths, framerate, temp_dir)
@@ -152,22 +160,9 @@ defmodule NathanForUs.AdminService do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp decode_frame_image_data(hex_data) when is_binary(hex_data) do
-    # The image data is stored as hex-encoded string starting with \x
-    case String.starts_with?(hex_data, "\\x") do
-      true ->
-        # Remove the \x prefix and decode from hex
-        hex_string = String.slice(hex_data, 2..-1//1)
-
-        case Base.decode16(hex_string, case: :lower) do
-          {:ok, binary_data} -> binary_data
-          :error -> <<>>
-        end
-
-      false ->
-        # Already binary data
-        hex_data
-    end
+  defp decode_frame_image_data(image_data) when is_binary(image_data) do
+    # Shared decoder handles legacy "\\x"-prefixed hex rows and raw bytes
+    NathanForUs.Video.FrameImage.raw(image_data) || <<>>
   end
 
   defp calculate_gif_framerate(frame_sequence, selected_frame_indices) do
