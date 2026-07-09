@@ -8,6 +8,57 @@ defmodule NathanForUs.Video do
 
   alias NathanForUs.Video.{Video, VideoFrame, VideoCaption, FrameCaption}
 
+  defmodule FrameImage do
+    @moduledoc """
+    Decodes `video_frames.image_data` into raw JPEG bytes.
+
+    Legacy rows may store the binary as hex-escaped text prefixed with `\\x`;
+    newer rows store raw bytes. All frame-serving paths (FrameController,
+    GIF posters) must go through this helper.
+    """
+
+    @doc """
+    Returns the raw JPEG binary for a frame's `image_data`, or `nil` when the
+    data is missing or cannot be decoded.
+    """
+    def raw(nil), do: nil
+
+    def raw("\\x" <> hex) do
+      case Base.decode16(hex, case: :mixed) do
+        {:ok, binary} -> binary
+        :error -> nil
+      end
+    end
+
+    def raw(binary) when is_binary(binary), do: binary
+
+    @doc """
+    Returns the frame's image as a base64 string, or `""` when unavailable.
+    """
+    def base64(image_data) do
+      case raw(image_data) do
+        nil -> ""
+        binary -> Base.encode64(binary)
+      end
+    end
+  end
+
+  # Fields safe to load into LiveViews: everything except the heavy
+  # `image_data` binary, which is served on demand via `GET /frame/:id`.
+  @frame_fields_without_image [
+    :id,
+    :video_id,
+    :frame_number,
+    :timestamp_ms,
+    :file_path,
+    :file_size,
+    :width,
+    :height,
+    :compression_ratio,
+    :inserted_at,
+    :updated_at
+  ]
+
   @doc """
   Creates a new video record.
   """
@@ -208,10 +259,10 @@ defmodule NathanForUs.Video do
   Fallback for when full-text search is not available.
   """
   def search_frames_by_text_simple(search_term) when is_binary(search_term) do
-    search_pattern = "%#{search_term}%"
+    search_pattern = "%#{escape_like_pattern(search_term)}%"
 
     query = """
-    SELECT DISTINCT f.*, 
+    SELECT f.id, f.video_id, f.frame_number, f.timestamp_ms,
            v.title as video_title,
            string_agg(DISTINCT c.text, ' | ') as caption_texts
     FROM video_frames f
@@ -219,8 +270,9 @@ defmodule NathanForUs.Video do
     JOIN frame_captions fc ON fc.frame_id = f.id
     JOIN video_captions c ON c.id = fc.caption_id
     WHERE c.text ILIKE $1
-    GROUP BY f.id, f.video_id, f.frame_number, f.timestamp_ms, f.file_path, f.file_size, f.width, f.height, f.image_data, f.compression_ratio, f.inserted_at, f.updated_at, v.title
+    GROUP BY f.id, f.video_id, f.frame_number, f.timestamp_ms, v.title
     ORDER BY v.title, f.timestamp_ms
+    LIMIT 300
     """
 
     Ecto.Adapters.SQL.query!(Repo, query, [search_pattern])
@@ -232,7 +284,7 @@ defmodule NathanForUs.Video do
   """
   def search_frames_by_text_simple_filtered(search_term, video_ids)
       when is_binary(search_term) and is_list(video_ids) do
-    search_pattern = "%#{search_term}%"
+    search_pattern = "%#{escape_like_pattern(search_term)}%"
 
     query = """
     SELECT DISTINCT f.*, 
@@ -256,7 +308,7 @@ defmodule NathanForUs.Video do
   """
   def search_frames_by_text_simple(search_term, video_id)
       when is_binary(search_term) and is_integer(video_id) do
-    search_pattern = "%#{search_term}%"
+    search_pattern = "%#{escape_like_pattern(search_term)}%"
 
     query = """
     SELECT DISTINCT f.*, 
@@ -357,6 +409,12 @@ defmodule NathanForUs.Video do
 
   # Private helper functions
 
+  # Escapes `%`, `_` and `\` so user input is matched literally in ILIKE
+  # patterns instead of acting as wildcards.
+  defp escape_like_pattern(term) when is_binary(term) do
+    String.replace(term, ~r/([%_\\])/, "\\\\\\1")
+  end
+
   defp map_frame_results_with_captions(%{rows: rows, columns: columns}) do
     Enum.map(rows, fn row ->
       frame_data =
@@ -410,7 +468,9 @@ defmodule NathanForUs.Video do
 
     case Ecto.Adapters.SQL.query(Repo, query, [frame_ids]) do
       {:ok, %{rows: rows}} ->
-        rows |> Enum.map(fn [text] -> text end) |> Enum.take(10)  # Limit to prevent overwhelming UI
+        # Limit to prevent overwhelming UI
+        rows |> Enum.map(fn [text] -> text end) |> Enum.take(10)
+
       {:error, _reason} ->
         []
     end
@@ -434,6 +494,7 @@ defmodule NathanForUs.Video do
               video_id: frame.video_id,
               timestamp_ms: frame.timestamp_ms
             }
+
             NathanForUs.FrameCache.put(frame_id, image_data, metadata)
             {:ok, image_data}
 
@@ -443,7 +504,7 @@ defmodule NathanForUs.Video do
           nil ->
             {:error, :not_found}
         end
-      
+
       cached_data ->
         # Got it from cache
         {:ok, cached_data}
@@ -1045,13 +1106,71 @@ defmodule NathanForUs.Video do
 
   @doc """
   Gets video frames within a specific frame number range.
+
+  Excludes the heavy `image_data` binary (frames render via `GET /frame/:id`);
+  the returned structs have `image_data: nil`.
   """
   def get_video_frames_in_range(video_id, start_frame, end_frame) do
     VideoFrame
     |> where([f], f.video_id == ^video_id)
     |> where([f], f.frame_number >= ^start_frame and f.frame_number <= ^end_frame)
     |> order_by([f], f.frame_number)
+    |> select([f], struct(f, ^@frame_fields_without_image))
     |> Repo.all()
+  end
+
+  @doc """
+  Returns a lightweight index of every frame in a video, ordered by frame
+  number: a list of `%{id: id, frame_number: n, timestamp_ms: ms}` maps.
+  No `image_data` is loaded; powers the editor filmstrip.
+  """
+  def list_frame_index(video_id) do
+    VideoFrame
+    |> where([f], f.video_id == ^video_id)
+    |> order_by([f], f.frame_number)
+    |> select([f], %{id: f.id, frame_number: f.frame_number, timestamp_ms: f.timestamp_ms})
+    |> Repo.all()
+  end
+
+  @doc """
+  Returns a thumbnail frame id for each of the given video ids in a single
+  query: a `%{video_id => frame_id}` map using each video's first frame.
+  Videos without frames are absent from the map.
+  """
+  def get_video_thumbnails(video_ids) when is_list(video_ids) do
+    query = """
+    SELECT DISTINCT ON (video_id) video_id, id
+    FROM video_frames
+    WHERE video_id = ANY($1)
+    ORDER BY video_id, frame_number
+    """
+
+    case Ecto.Adapters.SQL.query(Repo, query, [video_ids]) do
+      {:ok, %{rows: rows}} ->
+        Map.new(rows, fn [video_id, frame_id] -> {video_id, frame_id} end)
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("Video thumbnails query failed: #{inspect(reason)}")
+        %{}
+    end
+  end
+
+  @doc """
+  Returns the caption texts for many frames in one query: a
+  `%{frame_id => [caption_text]}` map (captions ordered by start time).
+  Frames without captions are absent from the map.
+  """
+  def get_frame_captions_for_ids(frame_ids) when is_list(frame_ids) do
+    from(fc in FrameCaption,
+      join: c in VideoCaption,
+      on: c.id == fc.caption_id,
+      where: fc.frame_id in ^frame_ids,
+      order_by: [asc: c.start_time_ms],
+      select: {fc.frame_id, c.text}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
   end
 
   @doc """
@@ -1062,16 +1181,18 @@ defmodule NathanForUs.Video do
     if String.length(search_term) < 3 do
       []
     else
-      search_pattern = "%#{search_term}%"
+      search_pattern = "%#{escape_like_pattern(search_term)}%"
 
       query = """
-      SELECT DISTINCT f.*, 
+      SELECT f.id, f.video_id, f.frame_number, f.timestamp_ms, f.file_path,
+             f.file_size, f.width, f.height, f.compression_ratio,
+             f.inserted_at, f.updated_at,
              string_agg(DISTINCT c.text, ' | ') as caption_texts
       FROM video_frames f
       JOIN frame_captions fc ON fc.frame_id = f.id
       JOIN video_captions c ON c.id = fc.caption_id
       WHERE f.video_id = $1 AND c.text ILIKE $2
-      GROUP BY f.id, f.video_id, f.frame_number, f.timestamp_ms, f.file_path, f.file_size, f.width, f.height, f.image_data, f.compression_ratio, f.inserted_at, f.updated_at
+      GROUP BY f.id, f.video_id, f.frame_number, f.timestamp_ms, f.file_path, f.file_size, f.width, f.height, f.compression_ratio, f.inserted_at, f.updated_at
       ORDER BY f.frame_number
       """
 
@@ -1080,6 +1201,7 @@ defmodule NathanForUs.Video do
           rows
           |> Enum.map(fn row ->
             # Convert the row data back to a VideoFrame struct
+            # (without image_data — frames render via GET /frame/:id)
             frame_data = Enum.zip(columns, row) |> Enum.into(%{})
 
             %VideoFrame{
@@ -1091,7 +1213,6 @@ defmodule NathanForUs.Video do
               file_size: frame_data["file_size"],
               width: frame_data["width"],
               height: frame_data["height"],
-              image_data: frame_data["image_data"],
               compression_ratio: frame_data["compression_ratio"],
               inserted_at: frame_data["inserted_at"],
               updated_at: frame_data["updated_at"]
@@ -1309,7 +1430,7 @@ defmodule NathanForUs.Video do
     SELECT v.id, COUNT(f.id) as frame_count
     FROM videos v
     JOIN video_frames f ON f.video_id = v.id
-    WHERE v.id != 14
+    WHERE v.status = 'completed'
     GROUP BY v.id
     HAVING COUNT(f.id) >= $1
     ORDER BY RANDOM()
@@ -1337,13 +1458,13 @@ defmodule NathanForUs.Video do
   Returns a list of frames with video information.
   """
   def get_random_frames(count \\ 50) do
-    # Get a sample of random frames from all videos except video ID 14
+    # Get a sample of random frames from all completed videos
     query = """
     SELECT f.id, f.video_id, f.frame_number, f.timestamp_ms, f.image_data, f.width, f.height,
            v.title as video_title, v.file_path as video_file_path
     FROM video_frames f
     JOIN videos v ON f.video_id = v.id
-    WHERE f.video_id != 14
+    WHERE v.status = 'completed'
     ORDER BY RANDOM()
     LIMIT $1
     """

@@ -24,6 +24,11 @@ defmodule NathanForUsWeb.Router do
     live "/video/:video_id", VideoTimelineLive
     live "/gifs", GifBrowseLive
     live "/timeline", TimelineLive
+    live "/g/:id", GifShowLive, :show
+
+    get "/gif/:id", GifController, :show
+    get "/gif/:id/poster", GifController, :poster
+    get "/frame/:id", FrameController, :show
 
     # Legacy routes from the previous incarnation of this app
     get "/public-timeline", PageController, :redirect_to_timeline
@@ -92,9 +97,10 @@ defmodule NathanForUsWeb.Router do
   # LiveDashboard with authentication for production
   scope "/admin" do
     pipe_through [:browser, :require_authenticated_user, :require_admin_user]
-    
+
     import Phoenix.LiveDashboard.Router
-    live_dashboard "/dashboard", 
+
+    live_dashboard "/dashboard",
       metrics: NathanForUsWeb.Telemetry,
       live_session_name: :admin_dashboard
   end
