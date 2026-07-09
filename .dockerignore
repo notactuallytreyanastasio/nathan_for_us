@@ -1,0 +1,15 @@
+# Build artifacts rebuilt inside the image
+_build/
+deps/
+assets/node_modules/
+.git/
+docs/
+
+# Grabber binaries are built by the Dockerfile's grabber stage; locally
+# built copies and vendored tool downloads stay out of the context
+priv/static/downloads/framecut-grab-*
+tools/grabber/vendor_bin/
+
+# Local uploads/frames never ship in the image
+priv/uploads/
+priv/static/frames/

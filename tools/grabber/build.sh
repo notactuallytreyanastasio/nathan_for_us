@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 
 YTDLP_BASE="https://github.com/yt-dlp/yt-dlp/releases/latest/download"
 FFMPEG_BASE="https://github.com/eugeneware/ffmpeg-static/releases/latest/download"
-OUT_DIR="../../priv/static/downloads"
+OUT_DIR="${FRAMECUT_GRAB_OUT:-../../priv/static/downloads}"
 
 # platform -> "GOOS GOARCH ytdlp-asset ffmpeg-asset suffix"
 spec() {

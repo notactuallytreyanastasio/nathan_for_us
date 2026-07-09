@@ -7,6 +7,15 @@
 ARG BUILDER_IMAGE="hexpm/elixir:1.18.1-erlang-27.3.4.8-debian-bookworm-20260202-slim"
 ARG RUNNER_IMAGE="debian:bookworm-20260202-slim"
 
+# Build the framecut-grab companion binaries (yt-dlp + ffmpeg embedded).
+# Layer-cached on tools/grabber content, so the ~250MB of vendored tool
+# downloads only re-run when the grabber changes.
+FROM golang:1.22-bookworm AS grabber
+
+WORKDIR /src
+COPY tools/grabber ./
+RUN FRAMECUT_GRAB_OUT=/out ./build.sh all
+
 FROM ${BUILDER_IMAGE} AS builder
 
 # Install build dependencies
@@ -81,6 +90,11 @@ ENV MIX_ENV="prod"
 
 # Only copy the final release from the build stage
 COPY --from=builder --chown=nobody:root /app/_build/${MIX_ENV}/rel/nathan_for_us ./
+
+# Grabber binaries go straight into the release's static dir, after
+# phx.digest ran — digesting/gzipping ~450MB of binaries is pointless.
+# (Path embeds the app version from mix.exs.)
+COPY --from=grabber --chown=nobody:root /out/ ./lib/nathan_for_us-0.1.0/priv/static/downloads/
 
 USER nobody
 
