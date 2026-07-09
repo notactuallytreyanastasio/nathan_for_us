@@ -42,6 +42,16 @@ defmodule NathanForUsWeb.AdminLive do
     end
   end
 
+  def handle_event("fail_stale_processing", _params, socket) do
+    count = NathanForUs.Video.fail_stale_processing()
+    stats = AdminService.get_admin_stats()
+
+    {:noreply,
+     socket
+     |> assign(stats: stats)
+     |> put_flash(:info, "Marked #{count} stalled upload(s) as failed.")}
+  end
+
   def handle_event("test_ffmpeg", _params, socket) do
     case AdminService.test_ffmpeg_availability() do
       {:ok, message} ->
@@ -143,6 +153,22 @@ defmodule NathanForUsWeb.AdminLive do
             class="inline-flex items-center px-4 py-2 border border-zinc-300 text-sm font-medium rounded-md text-zinc-700 bg-white hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
           >
             Refresh Stats
+          </button>
+        </div>
+
+    <!-- Stalled Uploads Section -->
+        <div class="bg-white rounded-lg p-6 shadow-sm border border-zinc-200 mb-8">
+          <h2 class="text-xl font-bold text-zinc-900 mb-4">Stalled Uploads</h2>
+          <p class="text-zinc-600 mb-6">
+            A browser upload abandoned mid-slice leaves its video stuck in "processing".
+            Mark anything processing for over 6 hours as failed.
+          </p>
+
+          <button
+            phx-click="fail_stale_processing"
+            class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-amber-600 hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-amber-500"
+          >
+            Clean Up Stalled Uploads
           </button>
         </div>
 

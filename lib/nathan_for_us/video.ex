@@ -49,6 +49,25 @@ defmodule NathanForUs.Video do
   end
 
   @doc """
+  Marks videos stuck in "processing" for longer than `hours` as failed.
+
+  An abandoned browser upload (tab closed mid-slice) leaves its video in
+  "processing" forever; real processing finishes in minutes.
+  Returns the number of videos marked.
+  """
+  def fail_stale_processing(hours \\ 6) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+    cutoff = NaiveDateTime.add(now, -hours, :hour)
+
+    {count, _} =
+      Video
+      |> where([v], v.status == "processing" and v.updated_at < ^cutoff)
+      |> Repo.update_all(set: [status: "failed", updated_at: now])
+
+    count
+  end
+
+  @doc """
   Lists all videos.
   """
   def list_videos do
