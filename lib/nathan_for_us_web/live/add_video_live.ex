@@ -417,10 +417,6 @@ defmodule NathanForUsWeb.AddVideoLive do
               to this site.
             </p>
 
-            <p :if={!@api_key_configured?} class="badge badge-warning">
-              No INGEST_API_KEY configured on this server
-            </p>
-
             <ol class="list-decimal list-inside text-sm text-stone-700 font-mono space-y-2">
               <li>
                 Download the grabber for your machine:
@@ -490,8 +486,13 @@ defmodule NathanForUsWeb.AddVideoLive do
               <pre class="bg-stone-100 border border-stone-200 rounded-lg p-4 text-xs text-stone-800 font-mono overflow-x-auto">{@windows_command}</pre>
             </div>
 
-            <p :if={!@admin? and @api_key_configured?} class="text-xs text-stone-500 leading-relaxed">
-              Ask your server admin for the ingest API key (INGEST_API_KEY).
+            <p class="text-xs text-stone-500 leading-relaxed">
+              The commands above use your personal API key &mdash; manage it on <.link
+                navigate={~p"/setup"}
+                class="text-brand-deep hover:text-brand"
+              >
+                the setup page
+              </.link>.
             </p>
 
             <p class="text-sm text-stone-700 leading-relaxed">
@@ -752,16 +753,14 @@ defmodule NathanForUsWeb.AddVideoLive do
 
   defp assign_cli_commands(socket) do
     base_url = socket.assigns.base_url
-    configured_key = Application.get_env(:nathan_for_us, :ingest_api_key)
-    key_configured? = is_binary(configured_key) and configured_key != ""
 
-    admin? =
+    # Everyone has a personal ingest key (see /setup); fall back to a
+    # placeholder only if this account somehow predates the backfill.
+    shown_key =
       case socket.assigns[:current_user] do
-        %{is_admin: true} -> true
-        _ -> false
+        %{api_key: key} when is_binary(key) and key != "" -> key
+        _ -> "YOUR_API_KEY"
       end
-
-    shown_key = if admin? and key_configured?, do: configured_key, else: "YOUR_API_KEY"
 
     example_url = "https://www.youtube.com/watch?v=..."
 
@@ -777,8 +776,6 @@ defmodule NathanForUsWeb.AddVideoLive do
       ~s(.\\framecut-grab-windows-amd64.exe "#{example_url}" --server #{base_url} --api-key #{shown_key})
 
     socket
-    |> assign(:admin?, admin?)
-    |> assign(:api_key_configured?, key_configured?)
     |> assign(:unix_command, unix_command)
     |> assign(:unix_copy_command, unix_run)
     |> assign(:windows_command, windows_command)
