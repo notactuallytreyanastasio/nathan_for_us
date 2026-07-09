@@ -50,7 +50,7 @@ defmodule NathanForUsWeb.GifBrowseLive do
 
     socket =
       socket
-      |> assign(:page_title, "Browse Nathan GIFs")
+      |> assign(:page_title, "GIF Feed")
       |> assign(:gifs, gifs_with_captions)
       |> assign(:loading, false)
       |> assign(:sort, sort)
@@ -158,7 +158,7 @@ defmodule NathanForUsWeb.GifBrowseLive do
 
         # Navigate to the video timeline with pre-selected frames
         path =
-          ~p"/video-timeline/#{video_id}?random=true&start_frame=#{start_frame}&selected_indices=#{indices_param}"
+          ~p"/video/#{video_id}?random=true&start_frame=#{start_frame}&selected_indices=#{indices_param}"
 
         socket = redirect(socket, to: path)
         {:noreply, socket}
@@ -185,9 +185,9 @@ defmodule NathanForUsWeb.GifBrowseLive do
       
       # Construct URL with both sort and gif_id params
       url_params = if socket.assigns.sort != "hot" do
-        "/browse-gifs?sort=#{socket.assigns.sort}&gif_id=#{gif_id}"
+        "/gifs?sort=#{socket.assigns.sort}&gif_id=#{gif_id}"
       else
-        "/browse-gifs?gif_id=#{gif_id}"
+        "/gifs?gif_id=#{gif_id}"
       end
       
       socket = 
@@ -207,9 +207,9 @@ defmodule NathanForUsWeb.GifBrowseLive do
   def handle_event("close_gif_modal", _params, socket) do
     # Construct URL to preserve sort parameter but remove gif_id
     url_path = if socket.assigns.sort != "hot" do
-      "/browse-gifs?sort=#{socket.assigns.sort}"
+      "/gifs?sort=#{socket.assigns.sort}"
     else
-      "/browse-gifs"
+      "/gifs"
     end
     
     socket = 
@@ -223,59 +223,15 @@ defmodule NathanForUsWeb.GifBrowseLive do
   end
 
   def handle_event("share_gif", %{"gif_id" => gif_id}, socket) do
-    # Map to the existing repost_gif functionality
-    handle_event("repost_gif", %{"gif_id" => gif_id}, socket)
-  end
+    # Deep-link to this GIF in the feed; the client copies it to the clipboard.
+    url = url(socket, ~p"/gifs?gif_id=#{gif_id}")
 
-  def handle_event("repost_gif", %{"gif_id" => browseable_gif_id}, socket) do
-    if socket.assigns.current_user do
-      # Find the browseable GIF
-      browseable_gif_id_int = String.to_integer(browseable_gif_id)
-      browseable_gif =
-        Enum.find(socket.assigns.gifs, &(&1.id == browseable_gif_id_int))
+    socket =
+      socket
+      |> push_event("copy_to_clipboard", %{text: url})
+      |> put_flash(:info, "Link copied — share away!")
 
-      if browseable_gif do
-        # Create a viral GIF post from this browseable GIF
-        attrs = %{
-          video_id: browseable_gif.video_id,
-          created_by_user_id: socket.assigns.current_user.id,
-          gif_id: browseable_gif.gif_id,
-          start_frame_index: browseable_gif.start_frame_index,
-          end_frame_index: browseable_gif.end_frame_index,
-          category: browseable_gif.category,
-          frame_data: browseable_gif.frame_data,
-          title: browseable_gif.title
-        }
-
-        case Viral.create_viral_gif(attrs) do
-          {:ok, _viral_gif} ->
-            socket = 
-              socket
-              |> put_flash(:info, "✅ GIF posted to public timeline! Check the NATHAN POST TIMELINE to see it.")
-              |> push_navigate(to: ~p"/public-timeline")
-            {:noreply, socket}
-
-          {:error, changeset} ->
-            error_msg = 
-              case changeset.errors do
-                [] -> "Unknown error occurred"
-                errors -> 
-                  errors
-                  |> Enum.map(fn {field, {msg, _}} -> "#{field}: #{msg}" end)
-                  |> Enum.join(", ")
-              end
-            socket = put_flash(socket, :error, "Failed to post GIF: #{error_msg}")
-            {:noreply, socket}
-        end
-      else
-        socket = put_flash(socket, :error, "GIF not found")
-        {:noreply, socket}
-      end
-    else
-      # Show register prompt for unauthenticated users
-      socket = assign(socket, :show_register_flash, true)
-      {:noreply, socket}
-    end
+    {:noreply, socket}
   end
 
   def render(assigns) do
@@ -285,9 +241,9 @@ defmodule NathanForUsWeb.GifBrowseLive do
       <div class="bg-gray-800 border-b border-gray-700 px-6 py-4">
         <div class="flex items-center justify-between">
           <div>
-            <h1 class="text-2xl font-bold font-mono">BROWSE GIFS</h1>
+            <h1 class="text-2xl font-bold font-mono">GIF FEED</h1>
             <p class="text-gray-400 text-sm font-mono">
-              Discover, upvote, and share the best Nathan moments
+              Discover, upvote, and share GIFs cut from the library
             </p>
           </div>
 
@@ -301,16 +257,16 @@ defmodule NathanForUsWeb.GifBrowseLive do
             </button>
 
             <.link
-              navigate={~p"/public-timeline"}
-              class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
-            >
-              NATHAN POST TIMELINE
-            </.link>
-            <.link
-              navigate={~p"/video-timeline"}
+              navigate={~p"/"}
               class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
             >
-              SEARCH QUOTES
+              MAKE A GIF
+            </.link>
+            <.link
+              navigate={~p"/add"}
+              class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
+            >
+              + ADD VIDEO
             </.link>
           </div>
         </div>
@@ -362,7 +318,7 @@ defmodule NathanForUsWeb.GifBrowseLive do
       <div class="bg-gray-800 border-b border-gray-700 px-6 py-3">
         <div class="flex items-center gap-1 max-w-7xl mx-auto">
           <.link
-            patch={~p"/browse-gifs?sort=hot"}
+            patch={~p"/gifs?sort=hot"}
             class={[
               "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
               if(@sort == "hot",
@@ -374,7 +330,7 @@ defmodule NathanForUsWeb.GifBrowseLive do
             🔥 Hot
           </.link>
           <.link
-            patch={~p"/browse-gifs?sort=top"}
+            patch={~p"/gifs?sort=top"}
             class={[
               "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
               if(@sort == "top",
@@ -386,7 +342,7 @@ defmodule NathanForUsWeb.GifBrowseLive do
             ⭐ Top
           </.link>
           <.link
-            patch={~p"/browse-gifs?sort=new"}
+            patch={~p"/gifs?sort=new"}
             class={[
               "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
               if(@sort == "new",
@@ -411,7 +367,7 @@ defmodule NathanForUsWeb.GifBrowseLive do
             <div class="text-center py-12">
               <div class="text-gray-400 font-mono mb-4">No GIFs created yet</div>
               <.link
-                navigate={~p"/video-timeline"}
+                navigate={~p"/"}
                 class="text-blue-400 hover:text-blue-300 font-mono"
               >
                 Create the first GIF →
@@ -431,12 +387,12 @@ defmodule NathanForUsWeb.GifBrowseLive do
                     <%= if gif.gif && gif.gif.gif_data do %>
                       <img
                         src={"data:image/gif;base64,#{NathanForUs.Gif.to_base64(gif.gif)}"}
-                        alt={gif.title || "Nathan GIF"}
+                        alt={gif.title || "GIF"}
                         class="w-full h-full object-cover"
                       />
                     <% else %>
                       <div class="text-gray-400 font-mono text-sm text-center p-4">
-                        <div>Nathan GIF</div>
+                        <div>GIF</div>
                         <div class="text-xs mt-1">
                           Frames {gif.start_frame_index}-{gif.end_frame_index}
                         </div>
@@ -454,7 +410,7 @@ defmodule NathanForUsWeb.GifBrowseLive do
     <!-- GIF Info & Actions -->
                   <div class="p-4">
                     <h3 class="text-white font-mono text-sm mb-2 truncate">
-                      {gif.title || "Untitled Nathan GIF"}
+                      {gif.title || "Untitled GIF"}
                     </h3>
 
                     <div class="text-gray-400 text-xs font-mono mb-3 leading-relaxed">
@@ -490,26 +446,15 @@ defmodule NathanForUsWeb.GifBrowseLive do
                         </div>
                       </div>
                       
-    <!-- Repost Button (only for authenticated users) -->
-                      <%= if @current_user do %>
-                        <button
-                          phx-click="repost_gif"
-                          phx-value-gif_id={gif.id}
-                          class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-xs font-mono transition-colors flex items-center gap-1"
-                          title="Repost this GIF to the public Nathan timeline"
-                        >
-                          <span>📤</span> Repost
-                        </button>
-                      <% else %>
-                        <button
-                          phx-click="repost_gif"
-                          phx-value-gif_id={gif.id}
-                          class="bg-gray-600 hover:bg-gray-500 text-white px-3 py-1 rounded text-xs font-mono transition-colors flex items-center gap-1"
-                          title="Login to repost this GIF to the public timeline"
-                        >
-                          <span>📤</span> Repost
-                        </button>
-                      <% end %>
+    <!-- Share Button -->
+                      <button
+                        phx-click="share_gif"
+                        phx-value-gif_id={gif.id}
+                        class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-mono transition-colors flex items-center gap-1"
+                        title="Copy a share link to this GIF"
+                      >
+                        <span>🔗</span> Share
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -564,15 +509,22 @@ defmodule NathanForUsWeb.GifBrowseLive do
   end
 
   defp refresh_gif_votes(socket, gif_id) do
-    # Update just the specific GIF's vote count in the current list
+    # Update just the specific GIF's vote counts in the current list,
+    # preserving decorations like :caption_preview added at load time
     updated_gifs =
       Enum.map(socket.assigns.gifs, fn gif ->
         if gif.id == gif_id do
-          # Reload this specific GIF to get updated vote counts
-          case Viral.get_recent_browseable_gifs(1)
-               |> Enum.find(&(&1.id == gif_id)) do
-            nil -> gif
-            updated_gif -> updated_gif
+          case NathanForUs.Repo.get(NathanForUs.Viral.BrowseableGif, gif_id) do
+            nil ->
+              gif
+
+            fresh ->
+              %{
+                gif
+                | upvotes_count: fresh.upvotes_count,
+                  downvotes_count: fresh.downvotes_count,
+                  hot_score: fresh.hot_score
+              }
           end
         else
           gif

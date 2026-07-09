@@ -24,7 +24,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
     {:ok, cached_gif} = create_test_gif(video, frames)
 
     {:ok, browseable_gif1} =
-      create_browseable_gif(video, regular_user1, cached_gif, "Nathan's Wisdom", 5)
+      create_browseable_gif(video, regular_user1, cached_gif, "Crowd Wisdom", 5)
 
     {:ok, browseable_gif2} =
       create_browseable_gif(video, regular_user2, cached_gif, "Awkward Moments", 3)
@@ -43,9 +43,9 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
 
   describe "mount and basic functionality" do
     test "mounts successfully with default hot sort", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
-      assert html =~ "BROWSE GIFS"
+      assert html =~ "GIF FEED"
       # Default sort
       assert html =~ "Hot"
       assert html =~ "Top"
@@ -53,23 +53,23 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
     end
 
     test "displays navigation links", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       assert html =~ "Random GIF"
-      assert html =~ "NATHAN POST TIMELINE"
-      assert html =~ "SEARCH QUOTES"
+      assert html =~ "MAKE A GIF"
+      assert html =~ "ADD VIDEO"
     end
 
     test "shows browseable GIFs", %{conn: conn, browseable_gif1: gif1, browseable_gif2: gif2} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show GIF titles or fallback
-      assert html =~ gif1.title or html =~ "Untitled Nathan GIF"
-      assert html =~ gif2.title or html =~ "Untitled Nathan GIF"
+      assert html =~ gif1.title or html =~ "Untitled GIF"
+      assert html =~ gif2.title or html =~ "Untitled GIF"
     end
 
     test "shows GIF metadata", %{conn: conn, browseable_gif1: gif1} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show upvote count and other metadata
       assert html =~ "#{gif1.upvotes_count}" or html =~ "upvotes"
@@ -79,51 +79,51 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       # Delete all browseable GIFs
       Repo.delete_all(BrowseableGif)
 
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
-      assert html =~ "No GIFs created yet" or html =~ "BROWSE GIFS"
+      assert html =~ "No GIFs created yet" or html =~ "GIF FEED"
     end
   end
 
   describe "sorting functionality" do
     test "can sort by hot (default)", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       state = :sys.get_state(view.pid).socket.assigns
       assert state.sort == "hot"
     end
 
     test "can sort by top", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Navigate to top sort
-      {:ok, _view, html} = live(conn, "/browse-gifs?sort=top")
+      {:ok, _view, html} = live(conn, "/gifs?sort=top")
 
-      assert html =~ "Browse Nathan GIFs"
+      assert html =~ "GIF Feed"
       # Should show same GIFs but potentially different order
     end
 
     test "can sort by new", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Navigate to new sort
-      {:ok, _view, html} = live(conn, "/browse-gifs?sort=new")
+      {:ok, _view, html} = live(conn, "/gifs?sort=new")
 
-      assert html =~ "Browse Nathan GIFs"
+      assert html =~ "GIF Feed"
     end
 
     test "invalid sort defaults to hot", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs?sort=invalid")
+      {:ok, _view, html} = live(conn, "/gifs?sort=invalid")
 
-      assert html =~ "Browse Nathan GIFs"
+      assert html =~ "GIF Feed"
       # Should handle gracefully
     end
 
     test "sort parameter updates via handle_params", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Change sort via URL
-      send(view.pid, {:live_patch, "/browse-gifs?sort=top"})
+      send(view.pid, {:live_patch, "/gifs?sort=top"})
 
       :sys.get_state(view.pid)
       # Should update sort
@@ -137,7 +137,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       browseable_gif2: gif
     } do
       conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Upvote a GIF (not created by this user)
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
@@ -153,7 +153,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       browseable_gif1: gif
     } do
       conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Try to upvote own GIF
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
@@ -165,7 +165,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
 
     test "user can remove their upvote", %{conn: conn, regular_user1: user, browseable_gif2: gif} do
       conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Upvote first
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
@@ -182,7 +182,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       conn: conn,
       browseable_gif1: gif
     } do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
 
@@ -192,7 +192,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
     end
 
     test "register flash can be closed", %{conn: conn, browseable_gif1: gif} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Trigger register flash
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
@@ -205,7 +205,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
     end
 
     test "anonymous voting uses session ID", %{conn: conn, browseable_gif1: gif} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Anonymous upvote should use session ID
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
@@ -218,27 +218,27 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
 
   describe "GIF interaction" do
     test "GIF displays correctly", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show the GIF title, fallback, or general GIF content
-      assert html =~ gif.title or html =~ "Untitled Nathan GIF" or html =~ "BROWSE GIFS"
+      assert html =~ gif.title or html =~ "Untitled GIF" or html =~ "GIF FEED"
     end
 
     test "GIF shows caption preview", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show caption or video title or fallback text
       assert html =~ "From:" or html =~ "Test Video"
     end
 
     test "GIF shows vote count", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       assert html =~ "#{gif.upvotes_count}"
     end
 
     test "GIF shows creation time", %{conn: conn, browseable_gif1: gif} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show relative time
       assert html =~ "ago" or html =~ "minutes" or html =~ "hours"
@@ -247,7 +247,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
 
   describe "random GIF functionality" do
     test "random GIF button redirects to timeline", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       render_click(view, "random_gif")
 
@@ -259,36 +259,29 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       # Delete all videos
       Repo.delete_all(VideoSchema)
 
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       render_click(view, "random_gif")
 
       html = render(view)
       # Should show error message
-      assert html =~ "No suitable videos" or html =~ "Browse Nathan GIFs"
+      assert html =~ "No suitable videos" or html =~ "GIF Feed"
     end
   end
 
   describe "navigation and routing" do
-    test "nathan post timeline link navigation works", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+    test "header navigation links work", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/gifs")
 
-      assert html =~ "NATHAN POST TIMELINE"
-      assert html =~ "/public-timeline"
-    end
-
-    test "search quotes link navigation works", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
-
-      assert html =~ "SEARCH QUOTES"
-      assert html =~ "/video-timeline"
+      assert html =~ "MAKE A GIF"
+      assert html =~ "/add"
     end
 
     test "sort URLs work correctly", %{conn: conn} do
       # Test all sort options
       for sort <- ["hot", "top", "new"] do
-        {:ok, _view, html} = live(conn, "/browse-gifs?sort=#{sort}")
-        assert html =~ "Browse Nathan GIFs"
+        {:ok, _view, html} = live(conn, "/gifs?sort=#{sort}")
+        assert html =~ "GIF Feed"
       end
     end
   end
@@ -305,14 +298,14 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
         create_browseable_gif(video, user, gif, "Test GIF #{i}", i)
       end
 
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
-      assert html =~ "Browse Nathan GIFs"
+      assert html =~ "GIF Feed"
       # Should handle the load without issues
     end
 
     test "loading state works", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       state = :sys.get_state(view.pid).socket.assigns
       # Should not be loading after mount
@@ -320,10 +313,10 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
     end
 
     test "handles sort change loading", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Trigger sort change
-      send(view.pid, {:live_patch, "/browse-gifs?sort=top"})
+      send(view.pid, {:live_patch, "/gifs?sort=top"})
 
       :sys.get_state(view.pid)
       # Should handle sort change gracefully
@@ -333,37 +326,37 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
   describe "error handling" do
     test "invalid GIF ID for upvote", %{conn: conn, regular_user1: user} do
       conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       render_click(view, "upvote_gif", %{"gif_id" => "99999"})
 
       # Should handle gracefully
       html = render(view)
       # Page should still work
-      assert html =~ "BROWSE GIFS"
+      assert html =~ "GIF FEED"
     end
 
     test "malformed gif_id for upvote", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       render_click(view, "upvote_gif", %{"gif_id" => "invalid"})
 
       # Should handle gracefully
       html = render(view)
-      assert html =~ "BROWSE GIFS"
+      assert html =~ "GIF FEED"
     end
 
     test "handles database errors gracefully", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should load successfully even if there are issues
-      assert html =~ "BROWSE GIFS"
+      assert html =~ "GIF FEED"
     end
   end
 
   describe "caption functionality" do
     test "GIFs show caption previews when available", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show either captions or video title
       # Either caption or fallback
@@ -371,7 +364,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
     end
 
     test "GIFs handle missing captions gracefully", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show video title as fallback
       assert html =~ "Test Video" or html =~ "From:"
@@ -381,7 +374,7 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
   describe "user voting state" do
     test "shows user's voting state correctly", %{conn: conn, regular_user1: user} do
       conn = log_in_user(conn, user)
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should show upvote buttons appropriately
       assert html =~ "upvote" or html =~ "👍"
@@ -393,13 +386,13 @@ defmodule NathanForUsWeb.GifBrowseLiveTest do
       browseable_gif2: gif
     } do
       conn = log_in_user(conn, user)
-      {:ok, view, _html} = live(conn, "/browse-gifs")
+      {:ok, view, _html} = live(conn, "/gifs")
 
       # Upvote a GIF
       render_click(view, "upvote_gif", %{"gif_id" => to_string(gif.id)})
 
       # Reload page
-      {:ok, _view, html} = live(conn, "/browse-gifs")
+      {:ok, _view, html} = live(conn, "/gifs")
 
       # Should remember the vote state
       assert html =~ "upvoted" or html =~ "#{gif.upvotes_count + 1}"

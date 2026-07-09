@@ -105,7 +105,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
           socket =
             socket
             |> put_flash(:error, "Video not found")
-            |> redirect(to: ~p"/video-timeline")
+            |> redirect(to: ~p"/")
 
           {:ok, socket}
 
@@ -153,6 +153,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
             |> assign(:gif_from_cache, false)
             |> assign(:selected_frame_captions, [])
             |> assign(:show_posted_success_flash, false)
+            |> assign(:has_captions, video_has_captions?(video_id))
 
           # Load initial frames
           send(self(), {:load_frames_at_position, 0.0})
@@ -164,7 +165,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
         socket =
           socket
           |> put_flash(:error, "Invalid video ID")
-          |> redirect(to: ~p"/video-timeline")
+          |> redirect(to: ~p"/")
 
         {:ok, socket}
     end
@@ -392,20 +393,19 @@ defmodule NathanForUsWeb.VideoTimelineLive do
 
     socket = assign(socket, :caption_search_term, term)
 
-    if String.length(term) >= 3 do
-      video_id = socket.assigns.video.id
-      suggestions = NathanForUs.Video.get_autocomplete_suggestions(term, video_id, 5)
+    socket =
+      if String.length(term) >= 3 do
+        video_id = socket.assigns.video.id
+        suggestions = NathanForUs.Video.get_autocomplete_suggestions(term, video_id, 5)
 
-      socket =
         socket
         |> assign(:caption_autocomplete_suggestions, suggestions)
         |> assign(:show_caption_autocomplete, length(suggestions) > 0)
-    else
-      socket =
+      else
         socket
         |> assign(:caption_autocomplete_suggestions, [])
         |> assign(:show_caption_autocomplete, false)
-    end
+      end
 
     {:noreply, socket}
   end
@@ -774,7 +774,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
 
         # Navigate to the video timeline with pre-selected frames
         path =
-          ~p"/video-timeline/#{video_id}?random=true&start_frame=#{start_frame}&selected_indices=#{indices_param}"
+          ~p"/video/#{video_id}?random=true&start_frame=#{start_frame}&selected_indices=#{indices_param}"
 
         socket = redirect(socket, to: path)
         {:noreply, socket}
@@ -799,9 +799,9 @@ defmodule NathanForUsWeb.VideoTimelineLive do
         video = socket.assigns.video
         user = socket.assigns.current_user
 
-        # Create viral GIF entry
-        case create_viral_gif_from_selection(selected_frames, video, user) do
-          {:ok, _viral_gif} ->
+        # Mark the generated GIF as posted to the public timeline
+        case post_gif_to_timeline(selected_frames, video, user) do
+          {:ok, _browseable_gif} ->
             socket =
               socket
               |> assign(:show_posted_success_flash, true)
@@ -1122,21 +1122,21 @@ defmodule NathanForUsWeb.VideoTimelineLive do
 
           <div class="flex items-center gap-4">
             <.link
-              navigate={~p"/video-timeline"}
+              navigate={~p"/"}
               class="text-blue-400 hover:text-blue-300 font-mono font-medium text-sm px-4 py-2"
             >
               ← Back to search
             </.link>
 
             <.link
-              navigate={~p"/public-timeline"}
+              navigate={~p"/timeline"}
               class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded font-mono font-medium transition-colors text-sm"
             >
-              NATHAN POST TIMELINE
+              PUBLIC TIMELINE
             </.link>
 
             <.link
-              navigate={~p"/browse-gifs"}
+              navigate={~p"/gifs"}
               class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded font-mono font-medium transition-colors text-sm"
             >
               BROWSE GIFS
@@ -1190,9 +1190,9 @@ defmodule NathanForUsWeb.VideoTimelineLive do
             Success!
           </p>
           <p class="mt-2 text-sm leading-5">
-            GIF posted to timeline!
-            <.link navigate={~p"/public-timeline"} class="font-semibold underline hover:no-underline">
-              Check it out in the Nathan timeline →
+            GIF posted to the public timeline!
+            <.link navigate={~p"/timeline"} class="font-semibold underline hover:no-underline">
+              View it on the timeline →
             </.link>
           </p>
           <button
@@ -1220,18 +1220,29 @@ defmodule NathanForUsWeb.VideoTimelineLive do
 
     <!-- Caption Search -->
       <div class="px-6">
-        <CaptionSearch.caption_search
-          search_term={@caption_search_term}
-          loading={@caption_loading}
-          video_id={@video.id}
-          autocomplete_suggestions={@caption_autocomplete_suggestions}
-          show_autocomplete={@show_caption_autocomplete}
-          search_form={@caption_search_form}
-          is_filtered={@is_caption_filtered}
-          is_context_view={@is_context_view}
-          context_target_frame={@context_target_frame}
-          expand_count={@expand_count}
-        />
+        <%= if @has_captions do %>
+          <CaptionSearch.caption_search
+            search_term={@caption_search_term}
+            loading={@caption_loading}
+            video_id={@video.id}
+            autocomplete_suggestions={@caption_autocomplete_suggestions}
+            show_autocomplete={@show_caption_autocomplete}
+            search_form={@caption_search_form}
+            is_filtered={@is_caption_filtered}
+            is_context_view={@is_context_view}
+            context_target_frame={@context_target_frame}
+            expand_count={@expand_count}
+          />
+        <% else %>
+          <div class="bg-gray-800 border border-gray-600 rounded-lg p-4 mb-4">
+            <div class="text-xs text-blue-400 uppercase tracking-wide font-mono mb-2">
+              CAPTION SEARCH
+            </div>
+            <p class="text-gray-400 text-sm font-mono">
+              No captions for this video
+            </p>
+          </div>
+        <% end %>
       </div>
 
     <!-- Timeline Controls (hidden when searching or in context view) -->
@@ -1392,7 +1403,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
                   <div>
                     <h3 class="text-lg font-semibold mb-2 text-white">Search</h3>
                     <p class="leading-relaxed">
-                      Search for quotes at the top and find video from specific portions
+                      Search captions at the top to jump to specific moments in the video
                     </p>
                   </div>
                 </div>
@@ -1538,6 +1549,13 @@ defmodule NathanForUsWeb.VideoTimelineLive do
     assign(socket, :selected_frame_captions, frame_captions)
   end
 
+  # Lightweight check for whether the video has any captions at all
+  defp video_has_captions?(video_id) do
+    import Ecto.Query, only: [from: 2]
+
+    Repo.exists?(from c in NathanForUs.Video.VideoCaption, where: c.video_id == ^video_id)
+  end
+
   # Check if current user is admin
   defp is_admin?(socket) do
     case Map.get(socket.assigns, :current_user) do
@@ -1553,57 +1571,22 @@ defmodule NathanForUsWeb.VideoTimelineLive do
     |> Enum.reject(&is_nil/1)
   end
 
-  # Create viral GIF from selected frames
-  defp create_viral_gif_from_selection(frames, video, user) do
+  # Mark the already-generated GIF's browseable entry as posted to the timeline
+  defp post_gif_to_timeline(frames, video, user) do
     if length(frames) >= 2 do
-      first_frame = List.first(frames)
-      last_frame = List.last(frames)
-
-      # Find the GIF in the database by generating hash
       frame_ids = Enum.map(frames, & &1.id)
       hash = NathanForUs.Gif.generate_hash(video.id, frame_ids)
-      gif = NathanForUs.Gif.find_by_hash(hash)
 
-      # Determine category based on frame content or default
-      category = determine_gif_category(frames)
+      case NathanForUs.Gif.find_by_hash(hash) do
+        nil ->
+          {:error, :gif_not_found}
 
-      # Create frame data for storage
-      frame_data =
-        Jason.encode!(%{
-          frame_ids: frame_ids,
-          frame_numbers: Enum.map(frames, & &1.frame_number),
-          timestamps: Enum.map(frames, & &1.timestamp_ms)
-        })
-
-      attrs = %{
-        video_id: video.id,
-        created_by_user_id: user.id,
-        # Link to actual GIF binary
-        gif_id: gif && gif.id,
-        start_frame_index: first_frame.frame_number,
-        end_frame_index: last_frame.frame_number,
-        category: category,
-        frame_data: frame_data,
-        title: generate_gif_title(category, video.title)
-      }
-
-      NathanForUs.Viral.create_viral_gif(attrs)
+        gif ->
+          NathanForUs.Viral.post_gif_to_timeline(gif.id, user.id)
+      end
     else
       {:error, :insufficient_frames}
     end
-  end
-
-  # Determine GIF category (basic implementation)
-  defp determine_gif_category(frames) do
-    # For now, randomly assign a category - could be enhanced with AI analysis
-    categories = NathanForUs.Viral.nathan_categories()
-    Enum.random(categories)
-  end
-
-  # Generate a title for the GIF
-  defp generate_gif_title(category, video_title) do
-    base_title = NathanForUs.Viral.ViralGif.generate_title(category)
-    "#{base_title} (#{video_title})"
   end
 
   # Create browseable GIF from generation (automatically called on every GIF generation)
@@ -1611,7 +1594,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
     if length(frames) >= 2 do
       first_frame = List.first(frames)
       last_frame = List.last(frames)
-      category = determine_gif_category(frames)
+      category = nil
 
       frame_data =
         Jason.encode!(%{
