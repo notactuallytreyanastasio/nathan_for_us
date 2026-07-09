@@ -78,13 +78,10 @@ if config_env() == :prod do
       port: port
     ],
     secret_key_base: secret_key_base,
-    check_origin: [
-      "https://www.nathanforus.com",
-      "https://nathanforus.com",
-      "//www.nathanforus.com",
-      "//nathanforus.com",
-      "https://sick-motionless-roach.gigalixirapp.com"
-    ]
+    # Derive allowed websocket origins from PHX_HOST — a hardcoded legacy list
+    # here 403'd every LiveView socket after the domain moved, killing all
+    # LiveView interactivity in production.
+    check_origin: ["https://#{host}", "//#{host}"]
 
   # ## SSL Support
   #
