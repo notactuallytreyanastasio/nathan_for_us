@@ -9,10 +9,10 @@ defmodule NathanForUsWeb.UserRegistrationController do
     changeset = Accounts.change_user_registration(%User{})
 
     conn
-    |> assign(:page_title, "Join Nathan For Us")
+    |> assign(:page_title, "Create an account")
     |> assign(
       :page_description,
-      "Sign up to join a group of like minded people and stay tuned for Nathan Fielder updates"
+      "Create a Framecut account to make, post, and vote on GIFs."
     )
     |> render(:new, changeset: changeset)
   end
@@ -34,10 +34,10 @@ defmodule NathanForUsWeb.UserRegistrationController do
 
       {:error, %Ecto.Changeset{} = changeset} ->
         conn
-        |> assign(:page_title, "Join Nathan For Us")
+        |> assign(:page_title, "Create an account")
         |> assign(
           :page_description,
-          "Sign up to join a group of like minded people and stay tuned for Nathan Fielder updates"
+          "Create a Framecut account to make, post, and vote on GIFs."
         )
         |> render(:new, changeset: changeset)
     end

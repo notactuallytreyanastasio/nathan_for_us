@@ -4,7 +4,9 @@ defmodule NathanForUsWeb.UserConfirmationController do
   alias NathanForUs.Accounts
 
   def new(conn, _params) do
-    render(conn, :new)
+    conn
+    |> assign(:page_title, "Confirm account")
+    |> render(:new)
   end
 
   def create(conn, %{"user" => %{"email" => email}}) do
@@ -25,7 +27,9 @@ defmodule NathanForUsWeb.UserConfirmationController do
   end
 
   def edit(conn, %{"token" => token}) do
-    render(conn, :edit, token: token)
+    conn
+    |> assign(:page_title, "Confirm account")
+    |> render(:edit, token: token)
   end
 
   # Do not log in the user after confirmation to avoid a

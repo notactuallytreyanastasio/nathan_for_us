@@ -1,68 +1,107 @@
-<div class="min-h-screen bg-zinc-50 py-16 px-4">
-<div class="mx-auto max-w-2xl bg-white rounded-2xl shadow-lg border border-zinc-200 p-8">
-<.header class="text-center">
-  Account Settings
-  <:subtitle>Manage your account email address and password settings</:subtitle>
-</.header>
+<div class="min-h-[calc(100vh-3rem)] flex items-start sm:items-center justify-center px-4 py-12">
+  <div class="w-full max-w-lg card p-8">
+    <.header class="mb-8">
+      Settings
+      <:subtitle>Manage your account email and password.</:subtitle>
+    </.header>
 
-<div class="space-y-12 divide-y">
-  <div>
-    <.simple_form :let={f} for={@email_changeset} action={~p"/users/settings"} id="update_email">
-      <.error :if={@email_changeset.action}>
-        Oops, something went wrong! Please check the errors below.
-      </.error>
+    <div class="space-y-10 divide-y divide-stone-200">
+      <div>
+        <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-3">
+          Account
+        </h2>
+        <dl class="font-mono text-sm text-stone-700 space-y-1">
+          <div class="flex items-baseline justify-between gap-4">
+            <dt class="text-stone-500">Username</dt>
+            <dd class="truncate">{@current_user.username}</dd>
+          </div>
+          <div class="flex items-baseline justify-between gap-4">
+            <dt class="text-stone-500">Email</dt>
+            <dd class="truncate">{@current_user.email}</dd>
+          </div>
+        </dl>
+      </div>
 
-      <input type="hidden" name="action" value="update_email" />
+      <div class="pt-10">
+        <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-6">
+          Change email
+        </h2>
+        <.simple_form
+          :let={f}
+          for={@email_changeset}
+          action={~p"/users/settings"}
+          id="update_email"
+        >
+          <.error :if={@email_changeset.action}>
+            Couldn't update your email &mdash; see below.
+          </.error>
 
-      <.input field={f[:email]} type="email" label="Email" required />
-      <.input
-        field={f[:current_password]}
-        name="current_password"
-        type="password"
-        label="Current Password"
-        required
-        id="current_password_for_email"
-      />
-      <:actions>
-        <.button phx-disable-with="Changing...">Change Email</.button>
-      </:actions>
-    </.simple_form>
+          <input type="hidden" name="action" value="update_email" />
+
+          <.input field={f[:email]} type="email" label="New email" autocomplete="email" required />
+          <.input
+            field={f[:current_password]}
+            name="current_password"
+            type="password"
+            label="Current password"
+            autocomplete="current-password"
+            required
+            id="current_password_for_email"
+          />
+          <:actions>
+            <.button phx-disable-with="Changing...">Change email</.button>
+          </:actions>
+        </.simple_form>
+      </div>
+
+      <div class="pt-10">
+        <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500 mb-6">
+          Change password
+        </h2>
+        <.simple_form
+          :let={f}
+          for={@password_changeset}
+          action={~p"/users/settings"}
+          id="update_password"
+        >
+          <.error :if={@password_changeset.action}>
+            Couldn't change your password &mdash; see below.
+          </.error>
+
+          <input type="hidden" name="action" value="update_password" />
+
+          <div>
+            <.input
+              field={f[:password]}
+              type="password"
+              label="New password"
+              autocomplete="new-password"
+              required
+            />
+            <p class="mt-1 text-xs text-stone-500 font-mono">At least 12 characters</p>
+          </div>
+          <.input
+            field={f[:password_confirmation]}
+            type="password"
+            label="Confirm new password"
+            autocomplete="new-password"
+            required
+          />
+
+          <.input
+            field={f[:current_password]}
+            name="current_password"
+            type="password"
+            label="Current password"
+            autocomplete="current-password"
+            id="current_password_for_password"
+            required
+          />
+          <:actions>
+            <.button phx-disable-with="Changing...">Change password</.button>
+          </:actions>
+        </.simple_form>
+      </div>
+    </div>
   </div>
-  <div>
-    <.simple_form
-      :let={f}
-      for={@password_changeset}
-      action={~p"/users/settings"}
-      id="update_password"
-    >
-      <.error :if={@password_changeset.action}>
-        Oops, something went wrong! Please check the errors below.
-      </.error>
-
-      <input type="hidden" name="action" value="update_password" />
-
-      <.input field={f[:password]} type="password" label="New password" required />
-      <.input
-        field={f[:password_confirmation]}
-        type="password"
-        label="Confirm new password"
-        required
-      />
-
-      <.input
-        field={f[:current_password]}
-        name="current_password"
-        type="password"
-        label="Current password"
-        id="current_password_for_password"
-        required
-      />
-      <:actions>
-        <.button phx-disable-with="Changing...">Change Password</.button>
-      </:actions>
-    </.simple_form>
-  </div>
-</div>
-
-</div>
 </div>

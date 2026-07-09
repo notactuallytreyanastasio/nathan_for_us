@@ -13,7 +13,7 @@ defmodule NathanForUsWeb.UserResetPasswordControllerTest do
     test "renders the reset password page", %{conn: conn} do
       conn = get(conn, ~p"/users/reset_password")
       response = html_response(conn, 200)
-      assert response =~ "Forgot your password?"
+      assert response =~ "Reset password"
     end
   end
 
@@ -109,7 +109,7 @@ defmodule NathanForUsWeb.UserResetPasswordControllerTest do
           }
         })
 
-      assert html_response(conn, 200) =~ "something went wrong"
+      assert html_response(conn, 200) =~ "see below"
     end
 
     test "does not reset password with invalid token", %{conn: conn} do

@@ -68,6 +68,7 @@ defmodule NathanForUsWeb.UserSettingsController do
     user = conn.assigns.current_user
 
     conn
+    |> assign(:page_title, "Settings")
     |> assign(:email_changeset, Accounts.change_user_email(user))
     |> assign(:password_changeset, Accounts.change_user_password(user))
   end

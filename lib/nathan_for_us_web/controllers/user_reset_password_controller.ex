@@ -6,7 +6,9 @@ defmodule NathanForUsWeb.UserResetPasswordController do
   plug :get_user_by_reset_password_token when action in [:edit, :update]
 
   def new(conn, _params) do
-    render(conn, :new)
+    conn
+    |> assign(:page_title, "Reset password")
+    |> render(:new)
   end
 
   def create(conn, %{"user" => %{"email" => email}}) do
@@ -26,7 +28,9 @@ defmodule NathanForUsWeb.UserResetPasswordController do
   end
 
   def edit(conn, _params) do
-    render(conn, :edit, changeset: Accounts.change_user_password(conn.assigns.user))
+    conn
+    |> assign(:page_title, "Reset password")
+    |> render(:edit, changeset: Accounts.change_user_password(conn.assigns.user))
   end
 
   # Do not log in the user after reset password to avoid a
@@ -39,7 +43,9 @@ defmodule NathanForUsWeb.UserResetPasswordController do
         |> redirect(to: ~p"/users/log_in")
 
       {:error, changeset} ->
-        render(conn, :edit, changeset: changeset)
+        conn
+        |> assign(:page_title, "Reset password")
+        |> render(:edit, changeset: changeset)
     end
   end
 
