@@ -23,7 +23,9 @@ sliced into 1fps frames with captions linked by timestamp. From there you can:
   extracted in the browser (canvas) and uploaded, so the server never needs the video file
 - **Ingest API** — `POST /api/videos/upload` accepts JSON (video metadata + base64 frames +
   captions), authenticated with the `INGEST_API_KEY` env var
-- **YouTube grabber** — a companion Python tool served at `/downloads/framecut_grab.py`
+- **YouTube grabber** — `framecut-grab`, a zero-dependency companion binary (Go, with
+  yt-dlp + ffmpeg embedded; source in `tools/grabber/`, built via `tools/grabber/build.sh`,
+  served from `/downloads/`; a Python variant at `/downloads/framecut_grab.py`
   downloads a video + subtitles, slices frames locally, and pushes them to the ingest API
 - **Server-side encode (optional)** — `NathanForUs.VideoProcessor` / `AdminService` can use
   ffmpeg for server-side frame extraction and GIF encoding when available

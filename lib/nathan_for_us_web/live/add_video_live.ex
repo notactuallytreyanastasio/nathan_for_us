@@ -271,35 +271,61 @@ defmodule NathanForUsWeb.AddVideoLive do
 
             <p class="text-gray-400 text-sm font-mono leading-relaxed">
               YouTube blocks servers from downloading videos, so Framecut can't rip them for
-              you. Instead, run the grabber on your own machine — it downloads the video with
-              yt-dlp, slices it into frames with ffmpeg, grabs captions automatically, and
-              uploads everything to this site.
+              you. Instead, run the grabber on your own machine — a single binary with
+              yt-dlp and ffmpeg built in (nothing to install). It downloads the video,
+              slices it into frames, grabs captions automatically, and uploads everything
+              to this site.
             </p>
 
             <ol class="list-decimal list-inside text-sm text-gray-300 font-mono space-y-2">
               <li>
-                <a
-                  href="/downloads/framecut_grab.py"
-                  download
-                  class="text-blue-400 hover:text-blue-300 underline"
-                >
-                  Download framecut_grab.py
-                </a>
+                Download the grabber for your machine:
+                <div class="flex flex-wrap gap-2 mt-2 ml-4">
+                  <a
+                    href="/downloads/framecut-grab-darwin-arm64"
+                    download
+                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                  >
+                     macOS (Apple Silicon)
+                  </a>
+                  <a
+                    href="/downloads/framecut-grab-darwin-amd64"
+                    download
+                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                  >
+                     macOS (Intel)
+                  </a>
+                  <a
+                    href="/downloads/framecut-grab-linux-amd64"
+                    download
+                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                  >
+                    🐧 Linux
+                  </a>
+                  <a
+                    href="/downloads/framecut-grab-windows-amd64.exe"
+                    download
+                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                  >
+                    ⊞ Windows
+                  </a>
+                </div>
               </li>
-              <li>
-                Install the tools it drives:
-                <code class="bg-gray-900 px-1.5 py-0.5 rounded text-green-400">pip install yt-dlp</code>
-                and ffmpeg (e.g.
-                <code class="bg-gray-900 px-1.5 py-0.5 rounded text-green-400">
-                  brew install ffmpeg
-                </code>)
-              </li>
-              <li>Run it with the video URL:</li>
+              <li>Make it executable and run it with the video URL:</li>
             </ol>
 
-            <pre class="bg-gray-900 border border-gray-700 rounded p-4 text-xs text-green-400 font-mono overflow-x-auto">python3 framecut_grab.py "https://www.youtube.com/watch?v=..." \
+            <pre class="bg-gray-900 border border-gray-700 rounded p-4 text-xs text-green-400 font-mono overflow-x-auto">chmod +x framecut-grab-*
+    ./framecut-grab-* "https://www.youtube.com/watch?v=..." \
       --server {@base_url} \
       --api-key YOUR_API_KEY</pre>
+
+            <p class="text-gray-500 text-xs font-mono leading-relaxed">
+              Prefer Python? The original
+              <a href="/downloads/framecut_grab.py" download class="text-blue-400 underline">
+                framecut_grab.py
+              </a>
+              does the same job if you have yt-dlp and ffmpeg installed.
+            </p>
 
             <p class="text-gray-400 text-sm font-mono leading-relaxed">
               The video appears in the library as soon as the upload finishes.

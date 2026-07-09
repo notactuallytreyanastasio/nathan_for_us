@@ -41,3 +41,7 @@ priv/static/frames
 
 # Environment variables file (contains secrets)
 .env
+
+# framecut-grab: vendored tools and built binaries are fetched/built, not committed
+/tools/grabber/vendor_bin/
+/priv/static/downloads/framecut-grab-*

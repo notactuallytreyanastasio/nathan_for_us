@@ -20,7 +20,9 @@ anywhere user-facing (the `nathan_for_us` app/module names remain as internal le
    hook (`assets/js/hooks/video_frame_slicer.js`), frames uploaded from the browser
 2. **API** — `POST /api/videos/upload` (`Api.VideoUploadController`): JSON with video
    metadata + base64 frames + captions, authenticated by the `INGEST_API_KEY` env var;
-   used by the YouTube grabber tool at `/downloads/framecut_grab.py`
+   used by the `framecut-grab` companion binary (source `tools/grabber/`, embeds yt-dlp +
+   ffmpeg via go:embed, built with `tools/grabber/build.sh`; Python variant
+   `/downloads/framecut_grab.py`)
 3. **Server-side (optional)** — `NathanForUs.VideoProcessor` (ffmpeg frame extraction) and
    `NathanForUs.AdminService` (server GIF encode); ffmpeg only required for these paths
 

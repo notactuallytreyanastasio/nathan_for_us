@@ -1,100 +1,46 @@
 FRAMECUT GRABBER
 ================
 
-framecut_grab.py downloads a YouTube video, slices it into JPEG frames,
-parses the English subtitles, and uploads everything to a Framecut server
-so you can make GIFs from it at /video/<id>.
+Two ways to run the grabber:
 
-Legal note: only grab content you own or have the rights to use.
+1. THE BINARY (recommended — zero dependencies)
+   Download framecut-grab-<your-platform> from the /add page.
+   yt-dlp and ffmpeg are built into the binary; nothing to install.
 
+     chmod +x framecut-grab-darwin-arm64
+     ./framecut-grab-darwin-arm64 "https://www.youtube.com/watch?v=..." \
+         --server https://your-framecut-server \
+         --api-key YOUR_API_KEY
 
-PREREQUISITES
--------------
+   On first run it unpacks its bundled tools to your user cache directory
+   (~/Library/Caches/framecut on macOS, ~/.cache/framecut on Linux).
 
-  1. Python 3.9 or newer (no pip packages needed for the script itself)
-  2. yt-dlp        pip install yt-dlp
-  3. ffmpeg        brew install ffmpeg          (macOS)
-                   sudo apt install ffmpeg      (Debian/Ubuntu)
-                   winget install ffmpeg        (Windows)
+2. THE PYTHON SCRIPT (if you already have the tools)
+   Requires Python 3.9+, yt-dlp (pip install yt-dlp) and ffmpeg on PATH.
 
-The script checks for these and tells you what is missing.
+     python3 framecut_grab.py "https://www.youtube.com/watch?v=..." \
+         --server https://your-framecut-server \
+         --api-key YOUR_API_KEY
 
+Both accept the same flags:
 
-BASIC USAGE
------------
-
-  python3 framecut_grab.py "https://www.youtube.com/watch?v=VIDEO_ID" \
-      --server https://your-framecut-server.com \
-      --api-key YOUR_API_KEY
-
-When it finishes it prints the URL of the new video's GIF editor, e.g.
-https://your-framecut-server.com/video/42
-
-
-FLAGS
------
-
-  --fps N                    Frames per second to extract (default 1.0).
-  --jpeg-quality N           JPEG quality 0-100 (default 85).
-  --max-height N             Downscale frames taller than N px (default 480).
-  --batch-size N             Frames per upload request (default 10). Lower
-                             this if uploads time out on a slow connection.
-  --cookies-from-browser B   Use your browser's YouTube cookies (chrome,
-                             firefox, safari, edge, ...). Needed for
-                             age-gated or members-only videos.
-  --title "My Title"         Override the video title.
-  --keep-files               Keep the downloaded video and frames in a
-                             ./framecut_<youtube-id>/ directory.
-  --local-only               Download and extract but do NOT upload.
-  --api-key KEY              Sent as the X-API-Key header.
-  --server URL               Base URL of your Framecut server.
-
-
-EXAMPLES
---------
-
-  Age-gated video, using your Chrome login:
-
-    python3 framecut_grab.py "https://youtu.be/VIDEO_ID" \
-        --server https://example.com --api-key KEY \
-        --cookies-from-browser chrome
-
-  Higher quality, 2 frames per second:
-
-    python3 framecut_grab.py "https://youtu.be/VIDEO_ID" \
-        --server https://example.com --api-key KEY \
-        --fps 2 --jpeg-quality 95 --max-height 720
-
-  No API key? Use --local-only, then upload through the website:
-
-    python3 framecut_grab.py "https://youtu.be/VIDEO_ID" --local-only
-
-    This keeps the .mp4 and .srt in ./framecut_<youtube-id>/ and skips the
-    upload. Then sign in to your Framecut server, open /add, and upload the
-    video (and srt) there.
-
+  --fps N                   frames per second to extract (default 1.0)
+  --jpeg-quality N          0-100 (default 85)
+  --max-height N            cap frame height in pixels (default 480)
+  --batch-size N            frames per upload request (default 10)
+  --cookies-from-browser B  chrome/firefox/safari — for age-restricted videos
+  --local-only              skip upload; keep mp4 + subtitles for the /add
+                            web upload flow
+  --keep-files              keep the working files after upload
+  --title T                 override the video title
 
 TROUBLESHOOTING
----------------
 
-  "HTTP Error 403" or "Sign in to confirm your age" from yt-dlp
-      YouTube wants a logged-in session. Re-run with
-      --cookies-from-browser chrome (or your browser). Make sure you are
-      logged in to YouTube in that browser. If it still fails, update
-      yt-dlp:  pip install -U yt-dlp  (YouTube changes often; an old
-      yt-dlp is the most common cause of download failures).
+  401 invalid api key      ask the site admin for the INGEST_API_KEY
+  503 ingest disabled      the server has no INGEST_API_KEY configured
+  403 / age-gate errors    add --cookies-from-browser chrome (or firefox,
+                           safari) so yt-dlp can use your logged-in session
+  macOS "cannot be opened" right-click > Open once, or:
+                           xattr -d com.apple.quarantine framecut-grab-*
 
-  "yt-dlp is not installed" / "ffmpeg is not installed"
-      Install the prerequisites above and make sure they are on your PATH.
-
-  "server rejected upload (HTTP 401/403)"
-      Your --api-key is wrong or missing. Check with your server admin,
-      or fall back to --local-only and the /add web upload.
-
-  Upload retries or times out
-      Large videos produce many frames. Try --batch-size 5, or reduce
-      --max-height / --jpeg-quality to shrink each frame.
-
-  No captions in the editor
-      The video has no English subtitles (not even auto-generated ones).
-      Frames still upload fine; text search just won't match this video.
+Only grab content you own or have the rights to use.
