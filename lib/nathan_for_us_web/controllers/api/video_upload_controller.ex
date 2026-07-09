@@ -189,12 +189,18 @@ defmodule NathanForUsWeb.Api.VideoUploadController do
         width: frame["width"],
         height: frame["height"],
         image_data: image_data,
-        compression_ratio: frame["compression_ratio"],
+        compression_ratio: to_float(frame["compression_ratio"]),
         inserted_at: now,
         updated_at: now
       }
     end)
   end
+
+  # insert_all bypasses changeset casting, and JSON clients may send whole
+  # floats as integers (e.g. Go marshals 1.0 as 1)
+  defp to_float(nil), do: nil
+  defp to_float(value) when is_integer(value), do: value * 1.0
+  defp to_float(value) when is_float(value), do: value
 
   defp create_captions_batch(caption_attrs) do
     Repo.insert_all(Video.VideoCaption, caption_attrs, returning: true)
