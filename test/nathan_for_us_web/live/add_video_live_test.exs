@@ -47,7 +47,9 @@ defmodule NathanForUsWeb.AddVideoLiveTest do
     assert html =~ "SLICE + UPLOAD"
 
     html = render_click(view, "switch_tab", %{"tab" => "cli"})
-    assert html =~ "framecut_grab.py"
+    assert html =~ "Download the app"
+    assert html =~ "Framecut-Grabber-macos.zip"
+    refute html =~ "chmod"
   end
 
   test "full client ingest protocol creates video, frames, captions and links", %{conn: conn} do

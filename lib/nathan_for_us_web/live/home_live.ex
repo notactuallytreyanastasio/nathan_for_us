@@ -222,9 +222,9 @@ defmodule NathanForUsWeb.HomeLive do
                 + Add your first video
               </.link>
               <p class="mt-4 text-sm text-stone-500">
-                Or ingest from the command line with
-                <.link navigate={~p"/add?tab=cli"} class="font-mono text-brand-deep hover:text-brand">
-                  framecut-grab
+                Or grab one straight from YouTube with
+                <.link navigate={~p"/add?tab=cli"} class="text-brand-deep hover:text-brand">
+                  the desktop app
                 </.link>
               </p>
             </div>

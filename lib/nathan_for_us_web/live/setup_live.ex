@@ -123,14 +123,15 @@ defmodule NathanForUsWeb.SetupLive do
             drag across the filmstrip and make your first GIF.
           </p>
           <p class="mt-4 text-sm text-stone-500">
-            Prefer the terminal or a file you already have?
-            <.link navigate={~p"/add?tab=cli"} class="text-brand-deep hover:text-brand">
-              CLI instructions
+            Have a video file already?
+            <.link navigate={~p"/add"} class="text-brand-deep hover:text-brand">
+              Upload it from the browser
             </.link>
             <span class="text-stone-300 mx-1">|</span>
-            <.link navigate={~p"/add"} class="text-brand-deep hover:text-brand">
-              Upload from the browser
-            </.link>
+            Terminal person?
+            <a href="/downloads/GRABBER_README.txt" class="text-brand-deep hover:text-brand">
+              grabber README
+            </a>
           </p>
         </section>
 

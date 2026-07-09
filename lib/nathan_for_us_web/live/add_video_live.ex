@@ -10,8 +10,10 @@ defmodule NathanForUsWeb.AddVideoLive do
       assets/js/hooks/video_frame_slicer.js). No server-side ffmpeg required,
       so this works for phone footage on any deploy.
 
-    * "From a URL (CLI)" — instructions for the companion grabber binary that
-      rips a video locally (yt-dlp + ffmpeg) and POSTs it to the ingest API.
+    * "From a URL (desktop app)" — download/connect steps for the Framecut
+      Grabber desktop app, which rips a video locally (yt-dlp + ffmpeg) and
+      POSTs it to the ingest API. The same binary doubles as a CLI (see the
+      grabber README).
 
   Client ingest protocol (hook <-> this LiveView):
 
@@ -86,7 +88,7 @@ defmodule NathanForUsWeb.AddVideoLive do
       {:noreply,
        push_event(socket, "ingest_error", %{
          message:
-           "That video needs #{frame_count} frames — the in-browser slicer caps out at #{@max_frames} (30 minutes). Use the CLI grabber instead."
+           "That video needs #{frame_count} frames — the in-browser slicer caps out at #{@max_frames} (30 minutes). Use the desktop app instead."
        })}
     else
       attrs = %{
@@ -239,7 +241,7 @@ defmodule NathanForUsWeb.AddVideoLive do
                 else: "px-3 py-1.5 text-stone-500 hover:text-stone-800"
             }
           >
-            From a URL (CLI)
+            From a URL (desktop app)
           </button>
         </div>
         
@@ -397,120 +399,96 @@ defmodule NathanForUsWeb.AddVideoLive do
           </div>
         </div>
         
-    <!-- CLI tab -->
+    <!-- Desktop app tab -->
         <div class={@tab != "cli" && "hidden"}>
-          <div class="card p-6 space-y-4">
+          <div class="card p-6 space-y-5">
             <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500">
               Ingest from a URL
             </h2>
 
             <p class="text-sm text-stone-700 leading-relaxed">
-              Works with YouTube and 1000+ sites via yt-dlp — and it's the path for videos
-              longer than 30 minutes.
+              Works with YouTube and 1000+ sites — and it's the path for videos longer
+              than 30 minutes. YouTube blocks servers from downloading videos, so the
+              Framecut Grabber app runs on your machine instead: paste a link, click
+              Grab, and the frames and captions land here automatically.
             </p>
 
-            <p class="text-sm text-stone-500 leading-relaxed">
-              YouTube blocks servers from downloading videos, so Framecut can't rip them for
-              you. Instead, run the grabber on your own machine — a single binary with
-              yt-dlp and ffmpeg built in (nothing to install). It downloads the video,
-              slices it into frames, grabs captions automatically, and uploads everything
-              to this site.
-            </p>
-
-            <ol class="list-decimal list-inside text-sm text-stone-700 font-mono space-y-2">
-              <li>
-                Download the grabber for your machine:
-                <div class="flex flex-wrap gap-2 mt-2 ml-4">
-                  <a
-                    href="/downloads/Framecut-Grabber-macos.zip"
-                    download
-                    class="btn-secondary px-3 py-1 text-xs"
-                  >
-                    macOS (universal .app)
-                  </a>
-                  <a
-                    href="/downloads/framecut-grabber-linux-amd64"
-                    download
-                    class="btn-secondary px-3 py-1 text-xs"
-                  >
-                    Linux
-                  </a>
-                  <a
-                    href="/downloads/Framecut-Grabber-windows-amd64.exe"
-                    download
-                    class="btn-secondary px-3 py-1 text-xs"
-                  >
-                    Windows
-                  </a>
-                </div>
-              </li>
-              <li>Run it with the video URL:</li>
-            </ol>
-
             <div>
-              <div class="flex items-center justify-between mb-2">
-                <span class="font-mono uppercase tracking-wider text-xs text-stone-500">
-                  macOS / Linux
-                </span>
-                <button
-                  type="button"
-                  class="btn-secondary px-3 py-1 text-xs"
-                  data-copy={@unix_copy_command}
-                >
-                  COPY
-                </button>
-              </div>
-              <pre class="bg-stone-100 border border-stone-200 rounded-lg p-4 text-xs text-stone-800 font-mono overflow-x-auto">{@unix_command}</pre>
-            </div>
-
-            <div>
-              <div class="flex items-center justify-between mb-2">
-                <span class="font-mono uppercase tracking-wider text-xs text-stone-500">
+              <h3 class="font-mono text-sm font-bold text-stone-900">
+                <span class="text-brand">1</span> · Download the app
+              </h3>
+              <div class="flex flex-wrap gap-2 mt-2">
+                <a href="/downloads/Framecut-Grabber-macos.zip" download class="btn-secondary">
+                  macOS
+                </a>
+                <a href="/downloads/Framecut-Grabber-windows-amd64.exe" download class="btn-secondary">
                   Windows
-                </span>
-                <button
-                  type="button"
-                  class="btn-secondary px-3 py-1 text-xs"
-                  data-copy={@windows_command}
-                >
-                  COPY
-                </button>
+                </a>
+                <a href="/downloads/framecut-grabber-linux-amd64" download class="btn-secondary">
+                  Linux
+                </a>
               </div>
-              <pre class="bg-stone-100 border border-stone-200 rounded-lg p-4 text-xs text-stone-800 font-mono overflow-x-auto">{@windows_command}</pre>
+              <p class="mt-2 text-xs text-stone-500">
+                Everything is built in — no installers, no dependencies.
+                macOS: unzip, then right-click &rarr; Open the first time.
+                Windows: just run it. Linux: mark it executable in your file manager.
+              </p>
             </div>
 
-            <p class="text-xs text-stone-500 leading-relaxed">
-              The commands above use your personal API key &mdash; manage it on <.link
-                navigate={~p"/setup"}
-                class="text-brand-deep hover:text-brand"
-              >
-                the setup page
-              </.link>.
-            </p>
+            <div>
+              <h3 class="font-mono text-sm font-bold text-stone-900">
+                <span class="text-brand">2</span> · Connect it once
+              </h3>
+              <p class="mt-1 text-sm text-stone-600">
+                The first time it opens, the app asks for your server and key. Paste these:
+              </p>
+              <div class="mt-2 space-y-2">
+                <div class="flex items-center gap-2">
+                  <code class="flex-1 bg-stone-100 border border-stone-200 rounded-lg px-3 py-2 font-mono text-xs text-stone-800 overflow-x-auto whitespace-nowrap">
+                    {@base_url}
+                  </code>
+                  <button type="button" class="btn-secondary px-3 py-1 text-xs" data-copy={@base_url}>
+                    COPY
+                  </button>
+                </div>
+                <div class="flex items-center gap-2">
+                  <code class="flex-1 bg-stone-100 border border-stone-200 rounded-lg px-3 py-2 font-mono text-xs text-stone-800 overflow-x-auto whitespace-nowrap">
+                    {@shown_key}
+                  </code>
+                  <button type="button" class="btn-secondary px-3 py-1 text-xs" data-copy={@shown_key}>
+                    COPY
+                  </button>
+                </div>
+              </div>
+              <p class="mt-2 text-xs text-stone-500">
+                That's your personal API key &mdash; manage it on <.link
+                  navigate={~p"/setup"}
+                  class="text-brand-deep hover:text-brand"
+                >
+                  the setup page
+                </.link>.
+              </p>
+            </div>
 
-            <p class="text-sm text-stone-700 leading-relaxed">
-              The video appears in the library as soon as the upload finishes.
-            </p>
+            <div>
+              <h3 class="font-mono text-sm font-bold text-stone-900">
+                <span class="text-brand">3</span> · Paste a link, click Grab
+              </h3>
+              <p class="mt-1 text-sm text-stone-600">
+                The app downloads the video, slices it into frames, and uploads everything
+                here. When it finishes, "Open in Framecut" drops you straight into the
+                editor — and the video appears in the library either way.
+              </p>
+            </div>
 
-            <p class="text-xs text-stone-500 leading-relaxed">
-              Prefer Python? The original
-              <a
-                href="/downloads/framecut_grab.py"
-                download
+            <p class="text-xs text-stone-500 leading-relaxed border-t border-stone-200 pt-4">
+              Terminal person? The same binary is a full CLI, and there's a Python variant —
+              see the <a
+                href="/downloads/GRABBER_README.txt"
                 class="text-brand-deep hover:text-brand underline"
               >
-                framecut_grab.py
-              </a>
-              does the same job if you have yt-dlp and ffmpeg installed.
-            </p>
-
-            <p class="text-xs text-stone-500 leading-relaxed">
-              Age-restricted video? Add
-              <code class="bg-stone-100 border border-stone-200 px-1.5 py-0.5 rounded">
-                --cookies-from-browser chrome
-              </code>
-              (or firefox/safari) so yt-dlp can use your logged-in session. Captions are grabbed
-              automatically when the video has them.
+                grabber README
+              </a>.
             </p>
           </div>
         </div>
@@ -745,8 +723,6 @@ defmodule NathanForUsWeb.AddVideoLive do
   # --- CLI tab helpers ------------------------------------------------------
 
   defp assign_cli_commands(socket) do
-    base_url = socket.assigns.base_url
-
     # Everyone has a personal ingest key (see /setup); fall back to a
     # placeholder only if this account somehow predates the backfill.
     shown_key =
@@ -755,26 +731,7 @@ defmodule NathanForUsWeb.AddVideoLive do
         _ -> "YOUR_API_KEY"
       end
 
-    example_url = "https://www.youtube.com/watch?v=..."
-
-    # Linux downloads a bare binary; the macOS .app carries the same CLI at
-    # "Framecut Grabber.app/Contents/MacOS/". The glob covers both names.
-    unix_run =
-      ~s(./framecut-grabber* "#{example_url}" --server #{base_url} --api-key #{shown_key})
-
-    unix_command =
-      "chmod +x framecut-grabber*\n" <>
-        ~s(./framecut-grabber* "#{example_url}" \\\n) <>
-        "  --server #{base_url} \\\n" <>
-        "  --api-key #{shown_key}"
-
-    windows_command =
-      ~s(.\\Framecut-Grabber-windows-amd64.exe "#{example_url}" --server #{base_url} --api-key #{shown_key})
-
-    socket
-    |> assign(:unix_command, unix_command)
-    |> assign(:unix_copy_command, unix_run)
-    |> assign(:windows_command, windows_command)
+    assign(socket, :shown_key, shown_key)
   end
 
   defp changeset_error_message(changeset) do
