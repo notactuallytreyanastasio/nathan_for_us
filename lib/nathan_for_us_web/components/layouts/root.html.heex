@@ -10,7 +10,7 @@
 
 <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website" />
-    <meta property="og:url" content={"https://#{@conn.host}/"} />
+    <meta property="og:url" content={assigns[:page_og_url] || "https://#{@conn.host}/"} />
     <meta property="og:title" content={assigns[:page_title] || "Framecut"} />
     <meta
       property="og:description"
@@ -18,15 +18,22 @@
         assigns[:page_description] || "Framecut — turn any video into GIFs, frame by frame."
       }
     />
-    <meta property="og:image" content={"https://#{@conn.host}/images/logo.png"} />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Framecut — turn any video into GIFs, frame by frame." />
+    <meta
+      property="og:image"
+      content={assigns[:page_og_image] || "https://#{@conn.host}/images/logo.png"}
+    />
+    <%= if assigns[:page_og_image_type] do %>
+      <meta property="og:image:type" content={assigns[:page_og_image_type]} />
+    <% else %>
+      <meta property="og:image:width" content="1200" />
+      <meta property="og:image:height" content="630" />
+    <% end %>
+    <meta property="og:image:alt" content={assigns[:page_title] || "Framecut"} />
     <meta property="og:site_name" content="Framecut" />
 
 <!-- Twitter -->
     <meta property="twitter:card" content="summary_large_image" />
-    <meta property="twitter:url" content={"https://#{@conn.host}/"} />
+    <meta property="twitter:url" content={assigns[:page_og_url] || "https://#{@conn.host}/"} />
     <meta property="twitter:title" content={assigns[:page_title] || "Framecut"} />
     <meta
       property="twitter:description"
@@ -34,13 +41,15 @@
         assigns[:page_description] || "Framecut — turn any video into GIFs, frame by frame."
       }
     />
-    <meta property="twitter:image" content={"https://#{@conn.host}/images/logo.png"} />
+    <meta
+      property="twitter:image"
+      content={assigns[:page_og_image] || "https://#{@conn.host}/images/logo.png"}
+    />
 
 <!-- Apple / iMessage -->
     <meta name="apple-mobile-web-app-title" content="Framecut" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <link rel="apple-touch-icon" href={~p"/images/logo.png"} />
 
 <!-- General -->
     <meta
@@ -49,6 +58,7 @@
         assigns[:page_description] || "Framecut — turn any video into GIFs, frame by frame."
       }
     />
+    <link rel="icon" type="image/svg+xml" href={~p"/images/favicon.svg"} />
 
     <link phx-track-static rel="stylesheet" href={~p"/assets/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/app.js"}>
@@ -68,45 +78,150 @@
       </script>
     <% end %>
   </head>
-  <body class="bg-gray-900">
-    <nav class="bg-gray-900 border-b border-gray-700 font-mono text-sm">
-      <div class="max-w-7xl mx-auto px-4 h-12 flex items-center justify-between gap-4 overflow-x-auto whitespace-nowrap">
-        <div class="flex items-center gap-5">
-          <a href="/" class="text-white font-bold tracking-wider hover:text-blue-400 transition-colors">
-            FRAMECUT ▶
+  <body>
+    <nav class="relative bg-white border-b border-stone-200 font-mono text-sm">
+      <div class="max-w-7xl mx-auto px-4 h-12 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-6 min-w-0">
+          <a
+            href="/"
+            class="text-stone-900 font-bold tracking-wider hover:text-brand-deep transition-colors whitespace-nowrap"
+          >
+            FRAMECUT <span class="text-brand">▶</span>
           </a>
-          <a href="/" class="text-gray-400 hover:text-white transition-colors">Library</a>
-          <a href="/timeline" class="text-gray-400 hover:text-white transition-colors">Timeline</a>
-          <a href="/gifs" class="text-gray-400 hover:text-white transition-colors">GIFs</a>
-          <a href="/add" class="text-gray-400 hover:text-white transition-colors">+ Add video</a>
+          <div class="hidden sm:flex items-center gap-5 h-12">
+            <a href="/" class={nav_link_class(@conn, "/")}>Library</a>
+            <a href="/gifs" class={nav_link_class(@conn, "/gifs")}>Explore</a>
+            <a href="/timeline" class={nav_link_class(@conn, "/timeline")}>Timeline</a>
+          </div>
         </div>
         <div class="flex items-center gap-4">
-          <%= if assigns[:current_user] do %>
-            <span class="text-gray-500 hidden sm:inline">{@current_user.email}</span>
-            <a href="/users/settings" class="text-gray-400 hover:text-white transition-colors">
-              Settings
-            </a>
-            <form action="/users/log_out" method="post" class="inline">
-              <input type="hidden" name="_method" value="delete" />
-              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
-              <button
-                type="submit"
-                class="text-gray-400 hover:text-white transition-colors bg-transparent border-0 p-0 font-mono text-sm cursor-pointer"
+          <div class="hidden sm:flex items-center gap-4">
+            <%= if assigns[:current_user] do %>
+              <span class="text-stone-400 max-w-[16ch] truncate">{@current_user.email}</span>
+              <a
+                href="/users/settings"
+                class="text-stone-500 hover:text-stone-900 transition-colors"
               >
-                Log out
-              </button>
-            </form>
-          <% else %>
-            <a href="/users/log_in" class="text-gray-400 hover:text-white transition-colors">
-              Log in
-            </a>
-            <a href="/users/register" class="text-gray-400 hover:text-white transition-colors">
-              Register
-            </a>
-          <% end %>
+                Settings
+              </a>
+              <form action="/users/log_out" method="post" class="inline">
+                <input type="hidden" name="_method" value="delete" />
+                <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                <button
+                  type="submit"
+                  class="text-stone-500 hover:text-stone-900 transition-colors bg-transparent border-0 p-0 font-mono text-sm cursor-pointer"
+                >
+                  Log out
+                </button>
+              </form>
+            <% else %>
+              <a href="/users/log_in" class="text-stone-500 hover:text-stone-900 transition-colors">
+                Log in
+              </a>
+              <a
+                href="/users/register"
+                class="text-stone-500 hover:text-stone-900 transition-colors"
+              >
+                Register
+              </a>
+            <% end %>
+          </div>
+          <a href="/add" class="btn-primary px-3 py-1 text-xs whitespace-nowrap">+ Add video</a>
+          <details class="sm:hidden">
+            <summary class="list-none cursor-pointer flex items-center text-stone-500 hover:text-stone-900 [&::-webkit-details-marker]:hidden">
+              <span class="hero-bars-3 h-6 w-6"></span>
+              <span class="sr-only">Menu</span>
+            </summary>
+            <div class="absolute inset-x-0 top-12 bg-white border-b border-stone-200 shadow-lg z-40">
+              <a href="/" class="block py-3 px-4 text-stone-700 hover:bg-stone-100">Library</a>
+              <a href="/gifs" class="block py-3 px-4 text-stone-700 hover:bg-stone-100">Explore</a>
+              <a href="/timeline" class="block py-3 px-4 text-stone-700 hover:bg-stone-100">
+                Timeline
+              </a>
+              <a href="/add" class="block py-3 px-4 text-stone-700 hover:bg-stone-100">
+                + Add video
+              </a>
+              <%= if assigns[:current_user] do %>
+                <div class="border-t border-stone-200">
+                  <span class="block py-3 px-4 text-stone-400 truncate">
+                    {@current_user.email}
+                  </span>
+                  <a
+                    href="/users/settings"
+                    class="block py-3 px-4 text-stone-700 hover:bg-stone-100"
+                  >
+                    Settings
+                  </a>
+                  <form action="/users/log_out" method="post">
+                    <input type="hidden" name="_method" value="delete" />
+                    <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+                    <button
+                      type="submit"
+                      class="block w-full text-left py-3 px-4 text-stone-700 hover:bg-stone-100 bg-transparent border-0 font-mono text-sm cursor-pointer"
+                    >
+                      Log out
+                    </button>
+                  </form>
+                </div>
+              <% else %>
+                <div class="border-t border-stone-200">
+                  <a href="/users/log_in" class="block py-3 px-4 text-stone-700 hover:bg-stone-100">
+                    Log in
+                  </a>
+                  <a
+                    href="/users/register"
+                    class="block py-3 px-4 text-stone-700 hover:bg-stone-100"
+                  >
+                    Register
+                  </a>
+                </div>
+              <% end %>
+            </div>
+          </details>
         </div>
       </div>
     </nav>
     {@inner_content}
+    <script>
+      // Delegated copy-to-clipboard: any element with a `data-copy` attribute
+      // copies that value on click and reports success in its own label.
+      (function () {
+        document.addEventListener("click", function (event) {
+          var el = event.target.closest("[data-copy]");
+          if (!el) return;
+          var text = el.getAttribute("data-copy");
+
+          function feedback(ok) {
+            if (el.dataset.copyRestoring) return;
+            el.dataset.copyRestoring = "1";
+            var original = el.textContent;
+            el.textContent = ok ? "COPIED" : "COPY FAILED";
+            setTimeout(function () {
+              el.textContent = original;
+              delete el.dataset.copyRestoring;
+            }, 1500);
+          }
+
+          if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(
+              function () { feedback(true); },
+              function () { feedback(false); }
+            );
+          } else {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            ta.setAttribute("readonly", "");
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.select();
+            var ok = false;
+            try { ok = document.execCommand("copy"); } catch (_e) { ok = false; }
+            document.body.removeChild(ta);
+            feedback(ok);
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

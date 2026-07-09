@@ -14,7 +14,12 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        brand: "#FD4F00",
+        brand: {
+          DEFAULT: "#FD4F00",
+          hover: "#E04700",
+          deep: "#C43D00",
+          tint: "#FFF3ED",
+        },
       }
     },
   },

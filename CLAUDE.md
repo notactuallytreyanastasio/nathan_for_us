@@ -3,7 +3,8 @@
 Framecut is a self-hostable GIF maker: any video gets sliced into 1fps JPEG frames stored in
 Postgres, captions (SRT) are linked to frames by timestamp, and users select frame ranges in
 a timeline editor to render GIFs. Brand: "Framecut" — tagline "Turn any video into GIFs,
-frame by frame." Dark UI (bg-gray-900, font-mono accents). No Nathan Fielder references
+frame by frame." Light UI (stone neutrals on bg-stone-50, font-mono accents, brand orange
+#FD4F00 accent; component recipes in `assets/css/app.css` @layer components). No Nathan Fielder references
 anywhere user-facing (the `nathan_for_us` app/module names remain as internal legacy naming).
 
 ## Frame pipeline

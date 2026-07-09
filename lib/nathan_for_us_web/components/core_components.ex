@@ -50,7 +50,11 @@ defmodule NathanForUsWeb.CoreComponents do
       data-cancel={JS.exec(@on_cancel, "phx-remove")}
       class="relative z-50 hidden"
     >
-      <div id={"#{@id}-bg"} class="bg-zinc-50/90 fixed inset-0 transition-opacity" aria-hidden="true" />
+      <div
+        id={"#{@id}-bg"}
+        class="bg-stone-900/40 fixed inset-0 transition-opacity"
+        aria-hidden="true"
+      />
       <div
         class="fixed inset-0 overflow-y-auto"
         aria-labelledby={"#{@id}-title"}
@@ -66,7 +70,7 @@ defmodule NathanForUsWeb.CoreComponents do
               phx-window-keydown={JS.exec("data-cancel", to: "##{@id}")}
               phx-key="escape"
               phx-click-away={JS.exec("data-cancel", to: "##{@id}")}
-              class="shadow-zinc-700/10 ring-zinc-700/10 relative hidden rounded-2xl bg-white p-14 shadow-lg ring-1 transition"
+              class="relative hidden rounded-2xl bg-white border border-stone-200 p-14 shadow-lg transition"
             >
               <div class="absolute top-6 right-5">
                 <button
@@ -113,22 +117,35 @@ defmodule NathanForUsWeb.CoreComponents do
       :if={msg = render_slot(@inner_block) || Phoenix.Flash.get(@flash, @kind)}
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
+      phx-mounted={
+        @kind == :info &&
+          JS.hide(
+            to: "##{@id}",
+            time: 4500,
+            transition: {"transition-opacity duration-500 delay-[4000ms]", "opacity-100", "opacity-0"}
+          )
+      }
       role="alert"
       class={[
-        "fixed top-2 right-2 mr-2 w-80 sm:w-96 z-50 rounded-lg p-3 ring-1",
-        @kind == :info && "bg-emerald-50 text-emerald-800 ring-emerald-500 fill-cyan-900",
-        @kind == :error && "bg-rose-50 text-rose-900 shadow-md ring-rose-500 fill-rose-900"
+        "fixed top-14 right-4 z-50 w-80 rounded-lg bg-white border border-stone-200 border-l-4",
+        "shadow-lg p-3 font-mono text-sm text-stone-800",
+        @kind == :info && "border-l-emerald-500",
+        @kind == :error && "border-l-red-500"
       ]}
       {@rest}
     >
-      <p :if={@title} class="flex items-center gap-1.5 text-sm font-semibold leading-6">
-        <.icon :if={@kind == :info} name="hero-information-circle-mini" class="h-4 w-4" />
-        <.icon :if={@kind == :error} name="hero-exclamation-circle-mini" class="h-4 w-4" />
+      <p :if={@title} class="flex items-center gap-1.5 pr-6 font-semibold leading-6 text-stone-900">
+        <.icon :if={@kind == :info} name="hero-check-circle-mini" class="h-4 w-4 text-emerald-500" />
+        <.icon :if={@kind == :error} name="hero-exclamation-circle-mini" class="h-4 w-4 text-red-500" />
         {@title}
       </p>
-      <p class="mt-2 text-sm leading-5">{msg}</p>
-      <button type="button" class="group absolute top-1 right-1 p-2" aria-label={gettext("close")}>
-        <.icon name="hero-x-mark-solid" class="h-5 w-5 opacity-40 group-hover:opacity-70" />
+      <p class="mt-1 leading-5">{msg}</p>
+      <button
+        type="button"
+        class="group absolute top-1 right-1 p-2 text-stone-400 hover:text-stone-700"
+        aria-label={gettext("close")}
+      >
+        <.icon name="hero-x-mark-solid" class="h-5 w-5" />
       </button>
     </div>
     """
@@ -152,24 +169,24 @@ defmodule NathanForUsWeb.CoreComponents do
       <.flash
         id="client-error"
         kind={:error}
-        title={gettext("We can't find the internet")}
+        title={gettext("Connection lost")}
         phx-disconnected={show(".phx-client-error #client-error")}
         phx-connected={hide("#client-error")}
         hidden
       >
-        {gettext("Attempting to reconnect")}
+        {gettext("Reconnecting…")}
         <.icon name="hero-arrow-path" class="ml-1 h-3 w-3 animate-spin" />
       </.flash>
 
       <.flash
         id="server-error"
         kind={:error}
-        title={gettext("Something went wrong!")}
+        title={gettext("Server error")}
         phx-disconnected={show(".phx-server-error #server-error")}
         phx-connected={hide("#server-error")}
         hidden
       >
-        {gettext("Hang in there while we get back on track")}
+        {gettext("Retrying…")}
         <.icon name="hero-arrow-path" class="ml-1 h-3 w-3 animate-spin" />
       </.flash>
     </div>
@@ -202,7 +219,7 @@ defmodule NathanForUsWeb.CoreComponents do
   def simple_form(assigns) do
     ~H"""
     <.form :let={f} for={@for} as={@as} {@rest}>
-      <div class="mt-10 space-y-8 bg-white">
+      <div class="space-y-8">
         {render_slot(@inner_block, f)}
         <div :for={action <- @actions} class="mt-2 flex items-center justify-between gap-6">
           {render_slot(action, f)}
@@ -230,16 +247,22 @@ defmodule NathanForUsWeb.CoreComponents do
     ~H"""
     <button
       type={@type}
-      class={[
-        "phx-submit-loading:opacity-75 rounded-lg bg-zinc-900 hover:bg-zinc-700 py-2 px-3",
-        "text-sm font-semibold leading-6 text-white active:text-white/80",
-        @class
-      ]}
+      class={["phx-submit-loading:opacity-75", default_button_variant(@class), @class]}
       {@rest}
     >
       {render_slot(@inner_block)}
     </button>
     """
+  end
+
+  # Only apply the default variant when the caller didn't pick one, so a caller
+  # passing class="btn-primary" doesn't render two competing button recipes.
+  defp default_button_variant(class) do
+    if class |> List.wrap() |> Enum.join(" ") |> String.contains?("btn-") do
+      nil
+    else
+      "btn-secondary"
+    end
   end
 
   @doc """
@@ -272,6 +295,7 @@ defmodule NathanForUsWeb.CoreComponents do
   attr :name, :any
   attr :label, :string, default: nil
   attr :value, :any
+  attr :class, :any, default: nil, doc: "extra classes appended to the input element"
 
   attr :type, :string,
     default: "text",
@@ -310,7 +334,7 @@ defmodule NathanForUsWeb.CoreComponents do
 
     ~H"""
     <div>
-      <label class="flex items-center gap-4 text-sm leading-6 text-zinc-600">
+      <label class="flex items-center gap-4 font-mono text-sm leading-6 text-stone-700">
         <input type="hidden" name={@name} value="false" disabled={@rest[:disabled]} />
         <input
           type="checkbox"
@@ -318,7 +342,7 @@ defmodule NathanForUsWeb.CoreComponents do
           name={@name}
           value="true"
           checked={@checked}
-          class="rounded border-zinc-300 text-zinc-900 focus:ring-0"
+          class={["rounded border-stone-300 text-brand focus:ring-brand", @class]}
           {@rest}
         />
         {@label}
@@ -335,7 +359,11 @@ defmodule NathanForUsWeb.CoreComponents do
       <select
         id={@id}
         name={@name}
-        class="mt-2 block w-full rounded-md border border-gray-300 bg-white shadow-sm focus:border-zinc-400 focus:ring-0 sm:text-sm"
+        class={[
+          "mt-2 block w-full rounded-lg bg-white border border-stone-300 px-3 py-2 font-mono text-sm",
+          "text-stone-900 focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand",
+          @class
+        ]}
         multiple={@multiple}
         {@rest}
       >
@@ -355,9 +383,11 @@ defmodule NathanForUsWeb.CoreComponents do
         id={@id}
         name={@name}
         class={[
-          "mt-2 block w-full rounded-lg text-zinc-900 focus:ring-0 sm:text-sm sm:leading-6 min-h-[6rem]",
-          @errors == [] && "border-zinc-300 focus:border-zinc-400",
-          @errors != [] && "border-rose-400 focus:border-rose-400"
+          "mt-2 block w-full rounded-lg bg-white border px-3 py-2 font-mono text-sm text-stone-900",
+          "placeholder-stone-400 focus:outline-none focus:ring-1 min-h-[6rem]",
+          @errors == [] && "border-stone-300 focus:border-brand focus:ring-brand",
+          @errors != [] && "border-red-400 focus:border-red-500 focus:ring-red-500",
+          @class
         ]}
         {@rest}
       >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
@@ -377,9 +407,11 @@ defmodule NathanForUsWeb.CoreComponents do
         id={@id}
         value={Phoenix.HTML.Form.normalize_value(@type, @value)}
         class={[
-          "mt-2 block w-full rounded-lg text-zinc-900 focus:ring-0 sm:text-sm sm:leading-6",
-          @errors == [] && "border-zinc-300 focus:border-zinc-400",
-          @errors != [] && "border-rose-400 focus:border-rose-400"
+          "mt-2 block w-full rounded-lg bg-white border px-3 py-2 font-mono text-sm text-stone-900",
+          "placeholder-stone-400 focus:outline-none focus:ring-1",
+          @errors == [] && "border-stone-300 focus:border-brand focus:ring-brand",
+          @errors != [] && "border-red-400 focus:border-red-500 focus:ring-red-500",
+          @class
         ]}
         {@rest}
       />
@@ -396,7 +428,7 @@ defmodule NathanForUsWeb.CoreComponents do
 
   def label(assigns) do
     ~H"""
-    <label for={@for} class="block text-sm font-semibold leading-6 text-zinc-800">
+    <label for={@for} class="block font-mono uppercase tracking-wider text-xs text-stone-500">
       {render_slot(@inner_block)}
     </label>
     """
@@ -409,8 +441,8 @@ defmodule NathanForUsWeb.CoreComponents do
 
   def error(assigns) do
     ~H"""
-    <p class="mt-3 flex gap-3 text-sm leading-6 text-rose-600">
-      <.icon name="hero-exclamation-circle-mini" class="mt-0.5 h-5 w-5 flex-none" />
+    <p class="mt-1 flex items-center gap-1 text-xs text-red-600">
+      <.icon name="hero-exclamation-circle-mini" class="h-4 w-4 flex-none" />
       {render_slot(@inner_block)}
     </p>
     """
@@ -429,15 +461,89 @@ defmodule NathanForUsWeb.CoreComponents do
     ~H"""
     <header class={[@actions != [] && "flex items-center justify-between gap-6", @class]}>
       <div>
-        <h1 class="text-lg font-semibold leading-8 text-zinc-800">
+        <h1 class="font-mono uppercase tracking-wider text-lg font-bold leading-8 text-stone-900">
           {render_slot(@inner_block)}
         </h1>
-        <p :if={@subtitle != []} class="mt-2 text-sm leading-6 text-zinc-600">
+        <p :if={@subtitle != []} class="mt-2 text-sm leading-6 text-stone-500">
           {render_slot(@subtitle)}
         </p>
       </div>
       <div class="flex-none">{render_slot(@actions)}</div>
     </header>
+    """
+  end
+
+  @doc """
+  Renders the per-page header band: white bar under the nav with the page
+  title, an optional subtitle, and an actions row.
+
+  ## Examples
+
+      <.page_header title="Library" subtitle="Every video you have sliced.">
+        <:actions>
+          <.link navigate={~p"/add"} class="btn-primary">Add video</.link>
+        </:actions>
+      </.page_header>
+  """
+  attr :title, :string, required: true
+  attr :subtitle, :string, default: nil
+
+  slot :actions, doc: "buttons/links rendered on the right side of the band"
+
+  def page_header(assigns) do
+    ~H"""
+    <div class="bg-white border-b border-stone-200 px-6 py-4">
+      <div class="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center gap-3">
+        <div class="flex-1 min-w-0">
+          <h1 class="font-mono uppercase tracking-wider text-2xl font-bold text-stone-900">
+            {@title}
+          </h1>
+          <p :if={@subtitle} class="mt-1 text-sm text-stone-500">{@subtitle}</p>
+        </div>
+        <div :if={@actions != []} class="flex flex-wrap gap-2">
+          {render_slot(@actions)}
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the shared "Account required" prompt shown when an anonymous
+  visitor tries to vote. `on_close` is the event pushed when dismissed.
+
+  ## Examples
+
+      <.register_prompt :if={@show_register_prompt} on_close="dismiss_register_prompt" />
+  """
+  attr :on_close, :string, required: true, doc: "phx-click event name for dismissing the prompt"
+
+  def register_prompt(assigns) do
+    ~H"""
+    <div class="fixed top-14 right-4 z-50 w-80 card border-l-4 border-l-brand p-4" role="alert">
+      <div class="flex items-start justify-between gap-2">
+        <h3 class="font-mono uppercase tracking-wider text-sm font-bold text-stone-900">
+          Account required
+        </h3>
+        <button
+          type="button"
+          class="-m-1 p-1 text-stone-400 hover:text-stone-700"
+          phx-click={@on_close}
+          aria-label="Close"
+        >
+          <.icon name="hero-x-mark-mini" class="h-4 w-4" />
+        </button>
+      </div>
+      <p class="mt-1 text-sm text-stone-600">Create a free account to vote on GIFs.</p>
+      <div class="mt-3 flex items-center gap-2">
+        <.link href="/users/register" class="btn-primary px-3 py-1 text-xs">
+          Create account
+        </.link>
+        <button type="button" class="btn-ghost px-3 py-1 text-xs" phx-click={@on_close}>
+          Not now
+        </button>
+      </div>
+    </div>
     """
   end
 
@@ -475,7 +581,7 @@ defmodule NathanForUsWeb.CoreComponents do
     ~H"""
     <div class="overflow-y-auto px-4 sm:overflow-visible sm:px-0">
       <table class="w-[40rem] mt-11 sm:w-full">
-        <thead class="text-sm text-left leading-6 text-zinc-500">
+        <thead class="text-sm text-left leading-6 text-stone-500">
           <tr>
             <th :for={col <- @col} class="p-0 pb-4 pr-6 font-normal">{col[:label]}</th>
             <th :if={@action != []} class="relative p-0 pb-4">
@@ -486,27 +592,27 @@ defmodule NathanForUsWeb.CoreComponents do
         <tbody
           id={@id}
           phx-update={match?(%Phoenix.LiveView.LiveStream{}, @rows) && "stream"}
-          class="relative divide-y divide-zinc-100 border-t border-zinc-200 text-sm leading-6 text-zinc-700"
+          class="relative divide-y divide-stone-100 border-t border-stone-200 text-sm leading-6 text-stone-700"
         >
-          <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="group hover:bg-zinc-50">
+          <tr :for={row <- @rows} id={@row_id && @row_id.(row)} class="group hover:bg-stone-50">
             <td
               :for={{col, i} <- Enum.with_index(@col)}
               phx-click={@row_click && @row_click.(row)}
               class={["relative p-0", @row_click && "hover:cursor-pointer"]}
             >
               <div class="block py-4 pr-6">
-                <span class="absolute -inset-y-px right-0 -left-4 group-hover:bg-zinc-50 sm:rounded-l-xl" />
-                <span class={["relative", i == 0 && "font-semibold text-zinc-900"]}>
+                <span class="absolute -inset-y-px right-0 -left-4 group-hover:bg-stone-50 sm:rounded-l-xl" />
+                <span class={["relative", i == 0 && "font-semibold text-stone-900"]}>
                   {render_slot(col, @row_item.(row))}
                 </span>
               </div>
             </td>
             <td :if={@action != []} class="relative w-14 p-0">
               <div class="relative whitespace-nowrap py-4 text-right text-sm font-medium">
-                <span class="absolute -inset-y-px -right-4 left-0 group-hover:bg-zinc-50 sm:rounded-r-xl" />
+                <span class="absolute -inset-y-px -right-4 left-0 group-hover:bg-stone-50 sm:rounded-r-xl" />
                 <span
                   :for={action <- @action}
-                  class="relative ml-4 font-semibold leading-6 text-zinc-900 hover:text-zinc-700"
+                  class="relative ml-4 font-semibold leading-6 text-stone-900 hover:text-stone-700"
                 >
                   {render_slot(action, @row_item.(row))}
                 </span>
@@ -536,10 +642,10 @@ defmodule NathanForUsWeb.CoreComponents do
   def list(assigns) do
     ~H"""
     <div class="mt-14">
-      <dl class="-my-4 divide-y divide-zinc-100">
+      <dl class="-my-4 divide-y divide-stone-100">
         <div :for={item <- @item} class="flex gap-4 py-4 text-sm leading-6 sm:gap-8">
-          <dt class="w-1/4 flex-none text-zinc-500">{item.title}</dt>
-          <dd class="text-zinc-700">{render_slot(item)}</dd>
+          <dt class="w-1/4 flex-none text-stone-500">{item.title}</dt>
+          <dd class="text-stone-700">{render_slot(item)}</dd>
         </div>
       </dl>
     </div>
@@ -561,7 +667,7 @@ defmodule NathanForUsWeb.CoreComponents do
     <div class="mt-16">
       <.link
         navigate={@navigate}
-        class="text-sm font-semibold leading-6 text-zinc-900 hover:text-zinc-700"
+        class="text-sm font-semibold leading-6 text-stone-900 hover:text-stone-700"
       >
         <.icon name="hero-arrow-left-solid" class="h-3 w-3" />
         {render_slot(@inner_block)}
