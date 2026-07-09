@@ -10,7 +10,7 @@ defmodule NathanForUsWeb.AddVideoLive do
       assets/js/hooks/video_frame_slicer.js). No server-side ffmpeg required,
       so this works for phone footage on any deploy.
 
-    * "From YouTube" — instructions for the companion grabber script that
+    * "From a URL (CLI)" — instructions for the companion grabber binary that
       rips a video locally (yt-dlp + ffmpeg) and POSTs it to the ingest API.
 
   Client ingest protocol (hook <-> this LiveView):
@@ -19,7 +19,11 @@ defmodule NathanForUsWeb.AddVideoLive do
       recv "ingest_ack"           {video_id}
       push "client_frame_batch"   {video_id, frames: [...]}   # batches of 10
       recv "batch_ack"            {video_id, inserted}        # flow control
-      push "client_ingest_finish" {video_id}                  # server links captions, redirects
+      push "client_ingest_finish" {video_id}                  # server links captions
+      recv "finish_ack"           {video_id}                  # then redirects
+      push "client_ingest_resume" {video_id, captions_text}   # after socket reconnect
+      recv "ingest_ack"           {video_id, resume_from}     # re-slice from this frame
+      push "client_ingest_cancel" {video_id}                  # deletes the partial video
       recv "ingest_error"         {message}                   # any step failed
   """
 
@@ -49,18 +53,22 @@ defmodule NathanForUsWeb.AddVideoLive do
       |> assign(:ingest_video_id, nil)
       |> assign(:ingest_captions_text, nil)
       |> assign(:ingest_frames_inserted, 0)
+      |> assign_cli_commands()
 
     {:ok, socket}
   end
 
   def handle_params(_params, uri, socket) do
     case base_url_from_uri(uri) do
-      nil -> {:noreply, socket}
-      base_url -> {:noreply, assign(socket, :base_url, base_url)}
+      nil ->
+        {:noreply, socket}
+
+      base_url ->
+        {:noreply, socket |> assign(:base_url, base_url) |> assign_cli_commands()}
     end
   end
 
-  def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in ["upload", "youtube"] do
+  def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in ["upload", "cli"] do
     {:noreply, assign(socket, :tab, tab)}
   end
 
@@ -78,7 +86,7 @@ defmodule NathanForUsWeb.AddVideoLive do
       {:noreply,
        push_event(socket, "ingest_error", %{
          message:
-           "That video needs #{frame_count} frames — the in-browser slicer caps out at #{@max_frames} (30 minutes). Use the grabber tool instead."
+           "That video needs #{frame_count} frames — the in-browser slicer caps out at #{@max_frames} (30 minutes). Use the CLI grabber instead."
        })}
     else
       attrs = %{
@@ -122,7 +130,9 @@ defmodule NathanForUsWeb.AddVideoLive do
           {:noreply, push_event(socket, "batch_ack", %{video_id: video_id, inserted: inserted})}
 
         {:error, reason} ->
-          Logger.error("Client ingest frame batch failed for video #{video_id}: #{inspect(reason)}")
+          Logger.error(
+            "Client ingest frame batch failed for video #{video_id}: #{inspect(reason)}"
+          )
 
           {:noreply,
            push_event(socket, "ingest_error", %{
@@ -135,6 +145,53 @@ defmodule NathanForUsWeb.AddVideoLive do
          message: "Upload session mismatch — please reload the page and try again."
        })}
     end
+  end
+
+  # A socket reconnect (deploy, network blip, phone lock) remounts this
+  # LiveView with ingest_video_id=nil. The hook detects the reconnect and asks
+  # to resume; we re-adopt the video and tell the client where to restart
+  # slicing from, trusting the DB frame count rather than the client's.
+  def handle_event("client_ingest_resume", %{"video_id" => video_id} = params, socket) do
+    with {:ok, video} <- Video.get_video(video_id),
+         true <- browser_ingest?(video),
+         "processing" <- video.status do
+      inserted = Video.count_video_frames(video.id)
+
+      socket =
+        socket
+        |> assign(:ingest_video_id, video.id)
+        |> assign(:ingest_captions_text, Map.get(params, "captions_text"))
+        |> assign(:ingest_frames_inserted, inserted)
+
+      {:noreply, push_event(socket, "ingest_ack", %{video_id: video.id, resume_from: inserted})}
+    else
+      _ ->
+        {:noreply,
+         push_event(socket, "ingest_error", %{
+           message: "This upload can no longer be resumed — please start it again."
+         })}
+    end
+  end
+
+  def handle_event("client_ingest_cancel", %{"video_id" => video_id}, socket) do
+    with {:ok, video} <- Video.get_video(video_id),
+         true <- browser_ingest?(video),
+         "processing" <- video.status do
+      # Frames, captions, and frame-caption links cascade via FK on_delete.
+      case Repo.delete(video) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error(
+            "Client ingest cancel failed to delete video #{video_id}: #{inspect(reason)}"
+          )
+      end
+    else
+      _ -> :ok
+    end
+
+    {:noreply, reset_ingest_assigns(socket)}
   end
 
   def handle_event("client_ingest_finish", %{"video_id" => video_id}, socket) do
@@ -150,126 +207,209 @@ defmodule NathanForUsWeb.AddVideoLive do
 
   def render(assigns) do
     ~H"""
-    <div class="min-h-screen bg-gray-900 text-white">
-      <!-- Header -->
-      <div class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-        <div class="flex items-center justify-between max-w-4xl mx-auto">
-          <div>
-            <h1 class="text-2xl font-bold font-mono">ADD A VIDEO</h1>
-            <p class="text-gray-400 text-sm font-mono">
-              Turn any video into GIFs, frame by frame.
-            </p>
-          </div>
+    <div class="min-h-screen">
+      <.page_header title="Add a video" subtitle="Turn any video into GIFs, frame by frame." />
 
-          <.link
-            navigate={~p"/"}
-            class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg font-mono font-medium transition-colors"
-          >
-            ← LIBRARY
-          </.link>
-        </div>
-      </div>
-
-    <!-- Tabs -->
-      <div class="bg-gray-800 border-b border-gray-700 px-6 py-3">
-        <div class="flex items-center gap-1 max-w-4xl mx-auto">
+      <div class="max-w-3xl mx-auto px-4 py-8">
+        <div
+          class="mb-6 inline-flex bg-stone-100 border border-stone-200 rounded-lg p-1 font-mono text-sm"
+          role="tablist"
+        >
           <button
             phx-click="switch_tab"
             phx-value-tab="upload"
-            class={[
-              "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
-              if(@tab == "upload",
-                do: "bg-green-600 text-white",
-                else: "text-gray-400 hover:text-white hover:bg-gray-700"
-              )
-            ]}
+            role="tab"
+            aria-selected={to_string(@tab == "upload")}
+            class={
+              if @tab == "upload",
+                do: "bg-white text-stone-900 rounded-md shadow-sm px-3 py-1.5",
+                else: "px-3 py-1.5 text-stone-500 hover:text-stone-800"
+            }
           >
-            📼 Upload a video
+            Upload a video
           </button>
           <button
             phx-click="switch_tab"
-            phx-value-tab="youtube"
-            class={[
-              "px-4 py-2 rounded font-mono font-medium transition-colors text-sm",
-              if(@tab == "youtube",
-                do: "bg-red-600 text-white",
-                else: "text-gray-400 hover:text-white hover:bg-gray-700"
-              )
-            ]}
+            phx-value-tab="cli"
+            role="tab"
+            aria-selected={to_string(@tab == "cli")}
+            class={
+              if @tab == "cli",
+                do: "bg-white text-stone-900 rounded-md shadow-sm px-3 py-1.5",
+                else: "px-3 py-1.5 text-stone-500 hover:text-stone-800"
+            }
           >
-            ▶ From YouTube
+            From a URL (CLI)
           </button>
         </div>
-      </div>
-
-      <div class="px-4 py-8">
-        <!-- Upload tab (hidden, never removed, so the hook survives tab switches mid-upload) -->
-        <div class={["max-w-2xl mx-auto", @tab != "upload" && "hidden"]}>
-          <div class="bg-gray-800 rounded-lg border border-gray-700 p-6">
+        
+    <!-- Upload tab (hidden, never removed, so the hook survives tab switches mid-upload) -->
+        <div class={@tab != "upload" && "hidden"}>
+          <div class="card p-6">
             <div id="video-frame-slicer" phx-hook="VideoFrameSlicer" phx-update="ignore">
               <div class="space-y-5">
                 <div>
-                  <label class="block text-sm font-mono text-gray-300 mb-2">TITLE</label>
+                  <label
+                    for="ingest-title"
+                    class="block font-mono uppercase tracking-wider text-xs text-stone-500 mb-2"
+                  >
+                    Title
+                  </label>
                   <input
                     type="text"
+                    id="ingest-title"
                     data-role="title-input"
                     placeholder="What's in this video?"
-                    class="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-green-500"
+                    class="input"
                   />
                 </div>
 
                 <div>
-                  <label class="block text-sm font-mono text-gray-300 mb-2">VIDEO FILE</label>
+                  <span
+                    id="ingest-video-label"
+                    class="block font-mono uppercase tracking-wider text-xs text-stone-500 mb-2"
+                  >
+                    Video file
+                  </span>
                   <input
                     type="file"
                     accept="video/*"
+                    id="ingest-video-file"
                     data-role="video-input"
-                    class="block w-full text-sm text-gray-400 font-mono file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-700 file:text-white file:font-mono file:cursor-pointer hover:file:bg-gray-600"
+                    aria-labelledby="ingest-video-label"
+                    class="sr-only"
                   />
-                  <p class="text-xs text-gray-500 font-mono mt-2">
-                    Up to 30 minutes. Sliced into 1 frame per second right here in your browser —
-                    nothing is uploaded until slicing starts. Phone footage works great.
-                  </p>
+                  <div
+                    data-role="dropzone"
+                    role="button"
+                    tabindex="0"
+                    aria-controls="ingest-video-file"
+                    class="border-2 border-dashed border-stone-300 rounded-xl bg-white hover:border-brand cursor-pointer text-center py-10 px-6 transition-colors"
+                  >
+                    <span class="hero-film h-10 w-10 text-stone-300 mx-auto block" aria-hidden="true">
+                    </span>
+                    <p class="mt-3 font-mono text-sm text-stone-700">
+                      Drop a video or click to browse
+                    </p>
+                    <p class="mt-1 text-xs text-stone-500">
+                      Up to 30 minutes. Sliced into 1 frame per second right here in your
+                      browser — nothing is uploaded until slicing starts. Phone footage works great.
+                    </p>
+                  </div>
+
+                  <div data-role="preview-wrap" class="hidden mt-3">
+                    <div class="rounded-lg border border-stone-200 bg-stone-100 overflow-hidden flex justify-center">
+                      <video data-role="preview" muted loop playsinline class="max-h-48 w-auto">
+                      </video>
+                    </div>
+                    <div data-role="stats" class="mt-2 font-mono text-xs text-stone-500"></div>
+                  </div>
+
+                  <div
+                    data-role="cap-error"
+                    class="hidden mt-3 rounded-lg border border-red-200 bg-red-50 p-3"
+                  >
+                    <p data-role="cap-error-text" class="font-mono text-sm text-red-700"></p>
+                    <button
+                      type="button"
+                      phx-click="switch_tab"
+                      phx-value-tab="cli"
+                      class="btn-secondary px-3 py-1 text-xs mt-2"
+                    >
+                      Use the CLI grabber instead
+                    </button>
+                  </div>
                 </div>
 
                 <div>
-                  <label class="block text-sm font-mono text-gray-300 mb-2">
-                    CAPTIONS (OPTIONAL)
+                  <label
+                    for="ingest-captions-file"
+                    class="block font-mono uppercase tracking-wider text-xs text-stone-500 mb-2"
+                  >
+                    Captions (optional)
                   </label>
                   <input
                     type="file"
                     accept=".srt,.vtt"
+                    id="ingest-captions-file"
                     data-role="captions-input"
-                    class="block w-full text-sm text-gray-400 font-mono file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-gray-700 file:text-white file:font-mono file:cursor-pointer hover:file:bg-gray-600"
+                    class="block w-full text-sm text-stone-500 font-mono file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-stone-100 file:text-stone-700 file:font-mono file:cursor-pointer hover:file:bg-stone-200"
                   />
-                  <p class="text-xs text-gray-500 font-mono mt-2">
+                  <p class="text-xs text-stone-500 mt-2">
                     An .srt or .vtt file makes the video searchable by what was said.
                   </p>
+                  <div data-role="captions-info" class="hidden mt-1 font-mono text-xs text-stone-500">
+                  </div>
                 </div>
 
-                <button
-                  type="button"
-                  data-role="start"
-                  class="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-lg font-mono font-medium transition-colors"
-                >
-                  SLICE + UPLOAD
+                <button type="button" data-role="start" class="btn-primary w-full py-3">
+                  <svg
+                    data-role="spinner"
+                    class="hidden animate-spin h-4 w-4"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      class="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      stroke-width="4"
+                    >
+                    </circle>
+                    <path
+                      class="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    >
+                    </path>
+                  </svg>
+                  <span data-role="start-label">SLICE + UPLOAD</span>
+                </button>
+
+                <button type="button" data-role="cancel" class="btn-secondary w-full hidden">
+                  CANCEL
                 </button>
 
                 <div data-role="progress-wrap" class="hidden">
-                  <progress data-role="progress" value="0" max="100" class="w-full h-2"></progress>
+                  <div class="bg-stone-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      data-role="progress-fill"
+                      class="bg-brand h-full transition-all"
+                      style="width: 0%"
+                    >
+                    </div>
+                  </div>
+                  <div data-role="progress-text" class="mt-1 font-mono text-xs text-stone-500"></div>
                 </div>
-                <div data-role="status" class="text-sm font-mono text-gray-400 min-h-5"></div>
+
+                <div
+                  data-role="status"
+                  aria-live="polite"
+                  class="text-sm font-mono text-stone-500 min-h-5"
+                >
+                </div>
               </div>
             </div>
           </div>
         </div>
+        
+    <!-- CLI tab -->
+        <div class={@tab != "cli" && "hidden"}>
+          <div class="card p-6 space-y-4">
+            <h2 class="font-mono uppercase tracking-wider text-xs text-stone-500">
+              Ingest from a URL
+            </h2>
 
-    <!-- YouTube tab -->
-        <div class={["max-w-2xl mx-auto", @tab != "youtube" && "hidden"]}>
-          <div class="bg-gray-800 rounded-lg border border-gray-700 p-6 space-y-4">
-            <h2 class="text-lg font-bold font-mono">RIP FROM YOUTUBE</h2>
+            <p class="text-sm text-stone-700 leading-relaxed">
+              Works with YouTube and 1000+ sites via yt-dlp — and it's the path for videos
+              longer than 30 minutes.
+            </p>
 
-            <p class="text-gray-400 text-sm font-mono leading-relaxed">
+            <p class="text-sm text-stone-500 leading-relaxed">
               YouTube blocks servers from downloading videos, so Framecut can't rip them for
               you. Instead, run the grabber on your own machine — a single binary with
               yt-dlp and ffmpeg built in (nothing to install). It downloads the video,
@@ -277,63 +417,104 @@ defmodule NathanForUsWeb.AddVideoLive do
               to this site.
             </p>
 
-            <ol class="list-decimal list-inside text-sm text-gray-300 font-mono space-y-2">
+            <p :if={!@api_key_configured?} class="badge badge-warning">
+              No INGEST_API_KEY configured on this server
+            </p>
+
+            <ol class="list-decimal list-inside text-sm text-stone-700 font-mono space-y-2">
               <li>
                 Download the grabber for your machine:
                 <div class="flex flex-wrap gap-2 mt-2 ml-4">
                   <a
                     href="/downloads/framecut-grab-darwin-arm64"
                     download
-                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                    class="btn-secondary px-3 py-1 text-xs"
                   >
-                     macOS (Apple Silicon)
+                    macOS (Apple Silicon)
                   </a>
                   <a
                     href="/downloads/framecut-grab-darwin-amd64"
                     download
-                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                    class="btn-secondary px-3 py-1 text-xs"
                   >
-                     macOS (Intel)
+                    macOS (Intel)
                   </a>
                   <a
                     href="/downloads/framecut-grab-linux-amd64"
                     download
-                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                    class="btn-secondary px-3 py-1 text-xs"
                   >
-                    🐧 Linux
+                    Linux
                   </a>
                   <a
                     href="/downloads/framecut-grab-windows-amd64.exe"
                     download
-                    class="bg-gray-700 hover:bg-gray-600 text-blue-300 px-3 py-1.5 rounded text-xs"
+                    class="btn-secondary px-3 py-1 text-xs"
                   >
-                    ⊞ Windows
+                    Windows
                   </a>
                 </div>
               </li>
-              <li>Make it executable and run it with the video URL:</li>
+              <li>Run it with the video URL:</li>
             </ol>
 
-            <pre class="bg-gray-900 border border-gray-700 rounded p-4 text-xs text-green-400 font-mono overflow-x-auto">chmod +x framecut-grab-*
-    ./framecut-grab-* "https://www.youtube.com/watch?v=..." \
-      --server {@base_url} \
-      --api-key YOUR_API_KEY</pre>
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <span class="font-mono uppercase tracking-wider text-xs text-stone-500">
+                  macOS / Linux
+                </span>
+                <button
+                  type="button"
+                  class="btn-secondary px-3 py-1 text-xs"
+                  data-copy={@unix_copy_command}
+                >
+                  COPY
+                </button>
+              </div>
+              <pre class="bg-stone-100 border border-stone-200 rounded-lg p-4 text-xs text-stone-800 font-mono overflow-x-auto">{@unix_command}</pre>
+            </div>
 
-            <p class="text-gray-500 text-xs font-mono leading-relaxed">
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <span class="font-mono uppercase tracking-wider text-xs text-stone-500">
+                  Windows
+                </span>
+                <button
+                  type="button"
+                  class="btn-secondary px-3 py-1 text-xs"
+                  data-copy={@windows_command}
+                >
+                  COPY
+                </button>
+              </div>
+              <pre class="bg-stone-100 border border-stone-200 rounded-lg p-4 text-xs text-stone-800 font-mono overflow-x-auto">{@windows_command}</pre>
+            </div>
+
+            <p :if={!@admin? and @api_key_configured?} class="text-xs text-stone-500 leading-relaxed">
+              Ask your server admin for the ingest API key (INGEST_API_KEY).
+            </p>
+
+            <p class="text-sm text-stone-700 leading-relaxed">
+              The video appears in the library as soon as the upload finishes.
+            </p>
+
+            <p class="text-xs text-stone-500 leading-relaxed">
               Prefer Python? The original
-              <a href="/downloads/framecut_grab.py" download class="text-blue-400 underline">
+              <a
+                href="/downloads/framecut_grab.py"
+                download
+                class="text-brand-deep hover:text-brand underline"
+              >
                 framecut_grab.py
               </a>
               does the same job if you have yt-dlp and ffmpeg installed.
             </p>
 
-            <p class="text-gray-400 text-sm font-mono leading-relaxed">
-              The video appears in the library as soon as the upload finishes.
-            </p>
-
-            <p class="text-gray-500 text-xs font-mono leading-relaxed">
+            <p class="text-xs text-stone-500 leading-relaxed">
               Age-restricted video? Add
-              <code class="bg-gray-900 px-1.5 py-0.5 rounded">--cookies-from-browser chrome</code>
+              <code class="bg-stone-100 border border-stone-200 px-1.5 py-0.5 rounded">
+                --cookies-from-browser chrome
+              </code>
               (or firefox/safari) so yt-dlp can use your logged-in session. Captions are grabbed
               automatically when the video has them.
             </p>
@@ -349,31 +530,50 @@ defmodule NathanForUsWeb.AddVideoLive do
   defp finalize_ingest(socket, video_id) do
     video = Video.get_video!(video_id)
 
-    link_captions(video_id, socket.assigns.ingest_captions_text)
+    captions_result = link_captions(video_id, socket.assigns.ingest_captions_text)
 
     case Video.update_video(video, %{
            status: "completed",
            processed_at: DateTime.utc_now(),
-           frame_count: socket.assigns.ingest_frames_inserted
+           frame_count: Video.count_video_frames(video_id)
          }) do
       {:ok, _video} ->
         socket =
           socket
-          |> assign(:ingest_video_id, nil)
-          |> assign(:ingest_captions_text, nil)
-          |> put_flash(:info, "Video added — pick some frames and make a GIF!")
+          |> reset_ingest_assigns()
+          |> put_finalize_flash(captions_result)
+          |> push_event("finish_ack", %{video_id: video_id})
           |> push_navigate(to: ~p"/video/#{video_id}")
 
         {:noreply, socket}
 
       {:error, changeset} ->
-        Logger.error("Client ingest failed to finalize video #{video_id}: #{inspect(changeset.errors)}")
+        Logger.error(
+          "Client ingest failed to finalize video #{video_id}: #{inspect(changeset.errors)}"
+        )
 
         {:noreply,
          push_event(socket, "ingest_error", %{
            message: "The video was uploaded but could not be finalized. Please try again."
          })}
     end
+  end
+
+  defp put_finalize_flash(socket, :ok),
+    do: put_flash(socket, :info, "Video added — pick some frames and make a GIF!")
+
+  defp put_finalize_flash(socket, {:error, _reason}),
+    do: put_flash(socket, :error, "Video added, but captions could not be parsed.")
+
+  defp reset_ingest_assigns(socket) do
+    socket
+    |> assign(:ingest_video_id, nil)
+    |> assign(:ingest_captions_text, nil)
+    |> assign(:ingest_frames_inserted, 0)
+  end
+
+  defp browser_ingest?(video) do
+    (video.metadata || %{})["source"] == "browser"
   end
 
   defp insert_frame_batch(video_id, frames) when is_list(frames) do
@@ -417,67 +617,72 @@ defmodule NathanForUsWeb.AddVideoLive do
   defp link_captions(video_id, captions_text) when is_binary(captions_text) do
     trimmed = String.trim(captions_text)
 
-    with true <- trimmed != "",
-         {:ok, entries} when entries != [] <-
-           SrtParser.parse_content(normalize_captions(trimmed)) do
-      now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-
-      caption_rows =
-        entries
-        |> Enum.filter(&(&1.end_time > &1.start_time))
-        |> Enum.map(fn entry ->
-          %{
-            video_id: video_id,
-            start_time_ms: entry.start_time,
-            end_time_ms: entry.end_time,
-            text: entry.text,
-            caption_index: entry.index,
-            inserted_at: now,
-            updated_at: now
-          }
-        end)
-
-      captions =
-        case caption_rows do
-          [] ->
-            []
-
-          rows ->
-            {_count, captions} =
-              Repo.insert_all(VideoCaption, rows, returning: [:id, :start_time_ms, :end_time_ms])
-
-            captions
-        end
-
-      frames =
-        Repo.all(
-          from f in VideoFrame,
-            where: f.video_id == ^video_id,
-            select: %{id: f.id, timestamp_ms: f.timestamp_ms}
-        )
-
-      # Same containment rule as the API upload controller: a frame belongs to
-      # every caption whose [start, end] window contains its timestamp.
-      links =
-        for frame <- frames,
-            caption <- captions,
-            frame.timestamp_ms >= caption.start_time_ms and
-              frame.timestamp_ms <= caption.end_time_ms do
-          %{
-            frame_id: frame.id,
-            caption_id: caption.id,
-            inserted_at: now,
-            updated_at: now
-          }
-        end
-
-      links
-      |> Enum.chunk_every(5000)
-      |> Enum.each(&Repo.insert_all(FrameCaption, &1))
-
-      :ok
+    if trimmed == "" do
+      {:error, :empty_captions}
     else
-      _ -> :ok
+      case SrtParser.parse_content(normalize_captions(trimmed)) do
+        {:ok, entries} when is_list(entries) and entries != [] ->
+          insert_caption_links(video_id, entries)
+
+        _ ->
+          {:error, :parse_failed}
+      end
+    end
+  end
+
+  defp insert_caption_links(video_id, entries) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+    caption_rows =
+      entries
+      |> Enum.filter(&(&1.end_time > &1.start_time))
+      |> Enum.map(fn entry ->
+        %{
+          video_id: video_id,
+          start_time_ms: entry.start_time,
+          end_time_ms: entry.end_time,
+          text: entry.text,
+          caption_index: entry.index,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    case caption_rows do
+      [] ->
+        {:error, :no_valid_captions}
+
+      rows ->
+        {_count, captions} =
+          Repo.insert_all(VideoCaption, rows, returning: [:id, :start_time_ms, :end_time_ms])
+
+        frames =
+          Repo.all(
+            from f in VideoFrame,
+              where: f.video_id == ^video_id,
+              select: %{id: f.id, timestamp_ms: f.timestamp_ms}
+          )
+
+        # Same containment rule as the API upload controller: a frame belongs to
+        # every caption whose [start, end] window contains its timestamp.
+        links =
+          for frame <- frames,
+              caption <- captions,
+              frame.timestamp_ms >= caption.start_time_ms and
+                frame.timestamp_ms <= caption.end_time_ms do
+            %{
+              frame_id: frame.id,
+              caption_id: caption.id,
+              inserted_at: now,
+              updated_at: now
+            }
+          end
+
+        links
+        |> Enum.chunk_every(5000)
+        |> Enum.each(&Repo.insert_all(FrameCaption, &1))
+
+        :ok
     end
   end
 
@@ -541,6 +746,42 @@ defmodule NathanForUsWeb.AddVideoLive do
       _ ->
         nil
     end
+  end
+
+  # --- CLI tab helpers ------------------------------------------------------
+
+  defp assign_cli_commands(socket) do
+    base_url = socket.assigns.base_url
+    configured_key = Application.get_env(:nathan_for_us, :ingest_api_key)
+    key_configured? = is_binary(configured_key) and configured_key != ""
+
+    admin? =
+      case socket.assigns[:current_user] do
+        %{is_admin: true} -> true
+        _ -> false
+      end
+
+    shown_key = if admin? and key_configured?, do: configured_key, else: "YOUR_API_KEY"
+
+    example_url = "https://www.youtube.com/watch?v=..."
+
+    unix_run = ~s(./framecut-grab-* "#{example_url}" --server #{base_url} --api-key #{shown_key})
+
+    unix_command =
+      "chmod +x framecut-grab-*\n" <>
+        ~s(./framecut-grab-* "#{example_url}" \\\n) <>
+        "  --server #{base_url} \\\n" <>
+        "  --api-key #{shown_key}"
+
+    windows_command =
+      ~s(.\\framecut-grab-windows-amd64.exe "#{example_url}" --server #{base_url} --api-key #{shown_key})
+
+    socket
+    |> assign(:admin?, admin?)
+    |> assign(:api_key_configured?, key_configured?)
+    |> assign(:unix_command, unix_command)
+    |> assign(:unix_copy_command, unix_run)
+    |> assign(:windows_command, windows_command)
   end
 
   defp changeset_error_message(changeset) do

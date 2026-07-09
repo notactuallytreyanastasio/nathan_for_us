@@ -43,10 +43,10 @@ defmodule NathanForUsWeb.AddVideoLiveTest do
   test "renders both tabs", %{conn: conn} do
     {:ok, view, html} = live(conn, "/add")
 
-    assert html =~ "ADD A VIDEO"
+    assert html =~ "Add a video"
     assert html =~ "SLICE + UPLOAD"
 
-    html = render_click(view, "switch_tab", %{"tab" => "youtube"})
+    html = render_click(view, "switch_tab", %{"tab" => "cli"})
     assert html =~ "framecut_grab.py"
   end
 
@@ -147,6 +147,77 @@ defmodule NathanForUsWeb.AddVideoLiveTest do
 
     render_hook(view, "client_frame_batch", %{"video_id" => 12_345, "frames" => [frame(1)]})
 
+    assert Repo.aggregate(VideoFrame, :count) == 0
+  end
+
+  test "resume re-adopts an in-progress browser upload after a remount", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/add")
+
+    render_hook(view, "client_ingest_start", %{
+      "title" => "Interrupted",
+      "duration_ms" => 4000,
+      "fps" => 1,
+      "frame_count" => 4,
+      "captions_text" => @srt,
+      "filename" => "clip.mp4"
+    })
+
+    video = Repo.one(from v in Video, order_by: [desc: v.id], limit: 1)
+
+    render_hook(view, "client_frame_batch", %{
+      "video_id" => video.id,
+      "frames" => [frame(1), frame(2)]
+    })
+
+    # A reconnect remounts the LiveView with no ingest state.
+    {:ok, view2, _html} = live(conn, "/add")
+
+    render_hook(view2, "client_ingest_resume", %{
+      "video_id" => video.id,
+      "captions_text" => @srt
+    })
+
+    assert_push_event(view2, "ingest_ack", %{resume_from: 2})
+
+    render_hook(view2, "client_frame_batch", %{
+      "video_id" => video.id,
+      "frames" => [frame(3), frame(4)]
+    })
+
+    render_hook(view2, "client_ingest_finish", %{"video_id" => video.id})
+    assert_redirect(view2, "/video/#{video.id}")
+
+    video = Repo.get!(Video, video.id)
+    assert video.status == "completed"
+    assert video.frame_count == 4
+    assert Repo.aggregate(from(c in VideoCaption, where: c.video_id == ^video.id), :count) == 2
+  end
+
+  test "resume is refused for unknown or non-browser videos", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/add")
+
+    render_hook(view, "client_ingest_resume", %{"video_id" => 999_999, "captions_text" => nil})
+    assert_push_event(view, "ingest_error", %{message: _})
+  end
+
+  test "cancel deletes the partial upload", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/add")
+
+    render_hook(view, "client_ingest_start", %{
+      "title" => "Changed my mind",
+      "duration_ms" => 2000,
+      "fps" => 1,
+      "frame_count" => 2,
+      "captions_text" => nil,
+      "filename" => "clip.mp4"
+    })
+
+    video = Repo.one(from v in Video, order_by: [desc: v.id], limit: 1)
+
+    render_hook(view, "client_frame_batch", %{"video_id" => video.id, "frames" => [frame(1)]})
+    render_hook(view, "client_ingest_cancel", %{"video_id" => video.id})
+
+    assert Repo.get(Video, video.id) == nil
     assert Repo.aggregate(VideoFrame, :count) == 0
   end
 end
