@@ -153,7 +153,8 @@ defmodule NathanForUs.GifCache do
   
   @impl true
   def handle_cast(:warm_cache, state) do
-    Task.start(fn -> 
+    # Supervised so shutdown kills the warm task before the Repo it queries
+    Task.Supervisor.start_child(NathanForUs.TaskSupervisor, fn ->
       try do
         # Get most recent GIFs
         recent_gifs = NathanForUs.Viral.get_recent_browseable_gifs(15)

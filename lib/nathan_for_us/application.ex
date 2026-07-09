@@ -9,6 +9,10 @@ defmodule NathanForUs.Application do
   def start(_type, _args) do
     base_children = [
       NathanForUs.Repo,
+      # Background work that touches the Repo (cache warming) runs under this
+      # supervisor. It starts after the Repo, so on shutdown its tasks are
+      # torn down before the Repo they query.
+      {Task.Supervisor, name: NathanForUs.TaskSupervisor},
       {DNSCluster, query: Application.get_env(:nathan_for_us, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: NathanForUs.PubSub},
       # Start the Finch HTTP client for sending emails
