@@ -19,6 +19,8 @@ defmodule NathanForUs.Viral.GifVote do
     |> validate_required([:browseable_gif_id, :vote_type])
     |> validate_inclusion(:vote_type, ["up", "down"])
     |> validate_vote_source()
+    |> foreign_key_constraint(:browseable_gif_id)
+    |> foreign_key_constraint(:user_id)
     |> unique_constraint([:user_id, :browseable_gif_id], name: :unique_user_gif_vote)
     |> unique_constraint([:session_id, :browseable_gif_id], name: :unique_session_gif_vote)
   end

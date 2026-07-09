@@ -1,10 +1,8 @@
 defmodule NathanForUs.Viral.BrowseableGif do
   @moduledoc """
   Browseable GIFs are ALL generated GIFs that users can browse for inspiration.
-  These are different from ViralGifs which are only the ones posted to the public timeline.
 
-  Every time someone generates a GIF, it gets saved here for browsing,
-  regardless of whether they post it to the timeline or not.
+  Every time someone generates a GIF, it gets saved here for browsing.
   """
 
   use Ecto.Schema
@@ -23,6 +21,8 @@ defmodule NathanForUs.Viral.BrowseableGif do
     field :downvotes_count, :integer, default: 0
     field :hot_score, :float, default: 0.0
     field :hot_score_updated_at, :utc_datetime
+    # Set when the creator posts the GIF to the public timeline
+    field :posted_at, :utc_datetime
 
     belongs_to :video, NathanForUs.Video.Video
     belongs_to :created_by_user, NathanForUs.Accounts.User
@@ -49,7 +49,8 @@ defmodule NathanForUs.Viral.BrowseableGif do
       :upvotes_count,
       :downvotes_count,
       :hot_score,
-      :hot_score_updated_at
+      :hot_score_updated_at,
+      :posted_at
     ])
     |> validate_required([:start_frame_index, :end_frame_index, :video_id, :gif_id])
     |> validate_number(:start_frame_index, greater_than_or_equal_to: 0)
@@ -72,20 +73,14 @@ defmodule NathanForUs.Viral.BrowseableGif do
   end
 
   @doc """
-  Generates a title based on Nathan moment categories.
+  Generates a default title from the category and source video.
   """
   def generate_title(category, video_title) do
     base_title =
       case category do
-        "awkward_silence" -> "Awkward Pause"
-        "business_genius" -> "Business Genius"
-        "confused_stare" -> "Nathan's Confusion"
-        "dramatic_pause" -> "Dramatic Moment"
-        "summit_ice" -> "Summit Ice"
-        "the_plan" -> "The Plan"
-        "rehearsal_prep" -> "Rehearsal"
-        "uncomfortable_truth" -> "Uncomfortable Truth"
-        _ -> "Nathan Moment"
+        nil -> "Clip"
+        "" -> "Clip"
+        category -> category |> String.replace("_", " ") |> String.capitalize()
       end
 
     "#{base_title} - #{video_title}"

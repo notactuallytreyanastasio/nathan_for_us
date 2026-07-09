@@ -204,7 +204,7 @@ defmodule NathanForUs.FrameCache do
     Task.start(fn -> 
       try do
         # Get frames from recent GIFs to identify commonly used frames
-        recent_gifs = NathanForUs.Viral.get_recent_gifs(10)
+        recent_gifs = NathanForUs.Viral.get_recent_browseable_gifs(10)
         
         # Extract frame IDs from these GIFs
         frame_ids = 

@@ -156,7 +156,7 @@ defmodule NathanForUs.GifCache do
     Task.start(fn -> 
       try do
         # Get most recent GIFs
-        recent_gifs = NathanForUs.Viral.get_recent_gifs(15)
+        recent_gifs = NathanForUs.Viral.get_recent_browseable_gifs(15)
         
         # Cache GIFs that have data
         cached_count = 
@@ -262,10 +262,6 @@ defmodule NathanForUs.GifCache do
         # Optional: evict very old, low-access entries
         evict_stale_entries()
     end
-  end
-  
-  defp evict_least_recently_used() do
-    evict_multiple_lru(1)
   end
   
   defp evict_multiple_lru(count) when count > 0 do
