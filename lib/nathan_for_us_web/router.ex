@@ -13,16 +13,6 @@ defmodule NathanForUsWeb.Router do
     plug :fetch_current_user
   end
 
-  pipeline :clean_browser do
-    plug :accepts, ["html"]
-    plug :fetch_session
-    plug :fetch_live_flash
-    plug :put_root_layout, html: {NathanForUsWeb.Layouts, :clean}
-    plug :protect_from_forgery
-    plug :put_secure_browser_headers
-    plug :fetch_current_user
-  end
-
   pipeline :api do
     plug :accepts, ["json"]
   end
@@ -30,14 +20,16 @@ defmodule NathanForUsWeb.Router do
   scope "/", NathanForUsWeb do
     pipe_through :browser
 
-    get "/", PageController, :redirect_to_public_timeline
-    live "/public-timeline", PublicTimelineLive
-    live "/browse-gifs", GifBrowseLive
-    live "/video-timeline", VideoTimelineSearchLive
-    live "/video-timeline/:video_id", VideoTimelineLive
-    live "/skeets", SkeetsLive
-    live "/chat", ChatRoomLive
-    live "/feed", FeedLive
+    live "/", HomeLive
+    live "/video/:video_id", VideoTimelineLive
+    live "/gifs", GifBrowseLive
+    live "/timeline", TimelineLive
+
+    # Legacy routes from the previous incarnation of this app
+    get "/public-timeline", PageController, :redirect_to_timeline
+    get "/browse-gifs", PageController, :redirect_to_gifs
+    get "/video-timeline", PageController, :redirect_to_home
+    get "/video-timeline/:video_id", PageController, :redirect_to_video
   end
 
   # Other scopes may use custom stacks.
@@ -82,6 +74,7 @@ defmodule NathanForUsWeb.Router do
   scope "/", NathanForUsWeb do
     pipe_through [:browser, :require_authenticated_user]
 
+    live "/add", AddVideoLive
     live "/admin", AdminLive
     get "/users/settings", UserSettingsController, :edit
     put "/users/settings", UserSettingsController, :update
@@ -104,12 +97,6 @@ defmodule NathanForUsWeb.Router do
     live_dashboard "/dashboard", 
       metrics: NathanForUsWeb.Telemetry,
       live_session_name: :admin_dashboard
-  end
-
-  scope "/", NathanForUsWeb do
-    pipe_through [:clean_browser, :require_authenticated_user]
-
-    live "/stay-tuned", StayTunedLive
   end
 
   scope "/", NathanForUsWeb do

@@ -18,7 +18,7 @@ defmodule NathanForUsWeb.UserSessionControllerTest do
 
     test "redirects if already logged in", %{conn: conn, user: user} do
       conn = conn |> log_in_user(user) |> get(~p"/users/log_in")
-      assert redirected_to(conn) == ~p"/stay-tuned"
+      assert redirected_to(conn) == ~p"/"
     end
   end
 
@@ -30,11 +30,11 @@ defmodule NathanForUsWeb.UserSessionControllerTest do
         })
 
       assert get_session(conn, :user_token)
-      assert redirected_to(conn) == ~p"/stay-tuned"
+      assert redirected_to(conn) == ~p"/"
 
       # Now do a logged in request and assert on the menu
       # Since authenticated users are redirected to /stay-tuned, test that page
-      conn = get(conn, ~p"/stay-tuned")
+      conn = get(conn, ~p"/")
       response = html_response(conn, 200)
       assert response =~ user.email
       # Note: /users/settings link not available on stay-tuned page
@@ -52,7 +52,7 @@ defmodule NathanForUsWeb.UserSessionControllerTest do
         })
 
       assert conn.resp_cookies["_nathan_for_us_web_user_remember_me"]
-      assert redirected_to(conn) == ~p"/stay-tuned"
+      assert redirected_to(conn) == ~p"/"
     end
 
     test "logs the user in with return to", %{conn: conn, user: user} do

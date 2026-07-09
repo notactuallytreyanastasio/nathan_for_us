@@ -30,7 +30,7 @@ defmodule NathanForUsWeb.UserRegistrationController do
         |> put_flash(:info, "Welcome! You can now upvote GIFs and post to the timeline.")
         |> put_session(:show_welcome_modal, true)
         |> UserAuth.log_in_user(user)
-        |> redirect(to: ~p"/public-timeline")
+        |> redirect(to: ~p"/gifs")
 
       {:error, %Ecto.Changeset{} = changeset} ->
         conn
