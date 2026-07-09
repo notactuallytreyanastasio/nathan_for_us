@@ -75,6 +75,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
           |> assign(:caption_results_open, false)
           |> assign(:caption_searched, false)
           |> assign(:caption_match_idxs, [])
+          |> assign(:recent_gifs, Viral.get_timeline_gifs(12))
           |> reset_generation_assigns()
           |> refresh_preview()
 
@@ -328,6 +329,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
               |> assign(:posted_to_timeline, true)
               |> assign(:show_post_form, false)
               |> assign(:post_error, nil)
+              |> assign(:recent_gifs, Viral.get_timeline_gifs(12))
 
             {:noreply, socket}
 
@@ -504,6 +506,41 @@ defmodule NathanForUsWeb.VideoTimelineLive do
         sel_end={@sel_end}
         caption_match_idxs={@caption_match_idxs}
       />
+
+      <section :if={@recent_gifs != []} class="border-t border-stone-200 bg-white">
+        <div class="mx-auto max-w-7xl px-4 py-8 pb-28">
+          <div class="mb-4 flex items-center justify-between">
+            <h2 class="font-mono text-sm font-bold uppercase tracking-wider text-stone-700">
+              Recently posted
+            </h2>
+            <.link navigate={~p"/gifs"} class="btn-ghost px-3 py-1 text-xs">Browse all</.link>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+            <.link
+              :for={gif <- @recent_gifs}
+              navigate={~p"/g/#{gif.id}"}
+              class="card card-hover group overflow-hidden"
+              title={gif.title || "GIF"}
+            >
+              <div class="relative aspect-video overflow-hidden bg-stone-100">
+                <img
+                  :if={gif.gif}
+                  src={~p"/gif/#{gif.gif.id}/poster"}
+                  loading="lazy"
+                  alt={gif.title || "GIF"}
+                  class="h-full w-full object-cover"
+                  onmouseenter={"this.src='/gif/#{gif.gif.id}'"}
+                  onmouseleave={"this.src='/gif/#{gif.gif.id}/poster'"}
+                />
+              </div>
+              <div class="truncate px-2 py-1.5 font-mono text-xs text-stone-600">
+                {gif.title || "Untitled"}
+              </div>
+            </.link>
+          </div>
+        </div>
+      </section>
 
       <div class="flex-1"></div>
 

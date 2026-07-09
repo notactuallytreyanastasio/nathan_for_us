@@ -35,6 +35,24 @@ defmodule NathanForUsWeb.VideoTimelineLiveTest do
                live(conn, "/video/invalid")
     end
 
+    test "shows a Recently posted gallery of timeline GIFs below the editor",
+         %{conn: conn, video: video, frames: frames, regular_user: user} do
+      posted = create_posted_gif(video, user, frames, "Grabbed Moment")
+
+      {:ok, _view, html} = live(conn, "/video/#{video.id}")
+
+      assert html =~ "Recently posted"
+      assert html =~ "Grabbed Moment"
+      assert html =~ "/g/#{posted.id}"
+      assert html =~ "/gif/#{posted.gif_id}/poster"
+    end
+
+    test "omits the gallery when nothing is posted yet", %{conn: conn, video: video} do
+      {:ok, _view, html} = live(conn, "/video/#{video.id}")
+
+      refute html =~ "Recently posted"
+    end
+
     test "renders the editor hooks and filmstrip", %{conn: conn, video: video} do
       {:ok, view, _html} = live(conn, "/video/#{video.id}")
 
@@ -345,5 +363,33 @@ defmodule NathanForUsWeb.VideoTimelineLiveTest do
 
     {_count, frame_records} = Repo.insert_all(VideoFrame, frames, returning: true)
     frame_records
+  end
+
+  defp create_posted_gif(video, user, frames, title) do
+    frame_ids = frames |> Enum.take(5) |> Enum.map(& &1.id)
+
+    {:ok, gif} =
+      %NathanForUs.Gif{}
+      |> NathanForUs.Gif.changeset(%{
+        hash: "test-#{System.unique_integer([:positive])}",
+        video_id: video.id,
+        frame_ids: frame_ids,
+        gif_data: <<71, 73, 70, 56, 57, 97>>,
+        frame_count: length(frame_ids)
+      })
+      |> Repo.insert()
+
+    {:ok, browseable} =
+      NathanForUs.Viral.create_browseable_gif(%{
+        title: title,
+        video_id: video.id,
+        gif_id: gif.id,
+        start_frame_index: 0,
+        end_frame_index: length(frame_ids) - 1,
+        is_public: true
+      })
+
+    {:ok, _} = NathanForUs.Viral.post_browseable_gif_to_timeline(browseable.id, user.id, title)
+    browseable
   end
 end
