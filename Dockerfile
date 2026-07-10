@@ -13,7 +13,7 @@ ARG RUNNER_IMAGE="debian:bookworm-20260202-slim"
 # Bump GRABBER_RELEASE when a new grabber tag ships.
 FROM debian:bookworm-slim AS grabber
 
-ARG GRABBER_RELEASE=grabber-v1.1.0
+ARG GRABBER_RELEASE=grabber-v1.2.0
 ARG GRABBER_REPO=notactuallytreyanastasio/nathan_for_us
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends curl ca-certificates \
