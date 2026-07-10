@@ -43,10 +43,9 @@ type guiConfig struct {
 }
 
 func runGUI() {
-	// Dark UI to match the Framecut brand, regardless of the OS setting.
-	_ = os.Setenv("FYNE_THEME", "dark")
-
 	a := app.NewWithID("online.bobbby.framecut.grabber")
+	// Light, brand-orange look that matches the Framecut web app.
+	a.Settings().SetTheme(framecutTheme{})
 	a.SetIcon(fyne.NewStaticResource("icon.png", iconPNG))
 
 	w := a.NewWindow("Framecut Grabber")
@@ -177,6 +176,22 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 	keyEntry.SetPlaceHolder("fc_… (from your server's /setup page)")
 	keyEntry.SetText(cfg.APIKey)
 
+	// "Get a key" link tracks whatever server is typed, opening its /setup page
+	// in the browser. With no server yet the link is inert.
+	setupLink := widget.NewHyperlink("Need a key? Open your server's /setup page →", nil)
+	syncSetupLink := func(s string) {
+		base := strings.TrimRight(strings.TrimSpace(s), "/")
+		if base == "" {
+			setupLink.SetURL(nil)
+			return
+		}
+		if u, err := url.Parse(base + "/setup"); err == nil {
+			setupLink.SetURL(u)
+		}
+	}
+	serverEntry.OnChanged = syncSetupLink
+	syncSetupLink(serverEntry.Text)
+
 	fpsEntry := widget.NewEntry()
 	fpsEntry.SetText(trimFloat(cfg.FPS))
 	qualityEntry := widget.NewEntry()
@@ -222,6 +237,7 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 		widget.NewFormItem("JPEG quality", qualityEntry),
 		widget.NewFormItem("Max height", heightEntry),
 		widget.NewFormItem("Cookies from", cookieSelect),
+		widget.NewFormItem("Save to", outputRow),
 	)
 	adv := widget.NewAccordion(widget.NewAccordionItem("Advanced options", advanced))
 
@@ -301,9 +317,9 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 		header,
 		widget.NewSeparator(),
 		mainForm,
+		setupLink,
 		adv,
 		localOnly,
-		outputRow,
 		container.NewPadded(grabBtn),
 		openBtn,
 		widget.NewLabelWithStyle("Progress", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -314,21 +330,34 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 
 // --- first-run wizard ----------------------------------------------------
 
-// wizardWelcome is step 1: one bold promise and a Continue button.
+// wizardWelcome is step 1: a short guide to how the whole thing works, so a
+// first-time user understands the grab → frames → editor → GIF flow before
+// they connect anything.
 func (ui *grabUI) wizardWelcome(cfg guiConfig) fyne.CanvasObject {
-	headline := widget.NewLabelWithStyle("Let's rip your first video into frames.",
-		fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	guide := widget.NewRichTextFromMarkdown(
+		"## Turn any video into GIFs\n\n" +
+			"**Framecut Grabber** rips a video into frames and sends them to your " +
+			"Framecut server, where you cut them into GIFs.\n\n" +
+			"**How it works**\n\n" +
+			"1. **Paste a link** — it downloads the video and slices it into " +
+			"one-frame-per-second images, right on your machine.\n" +
+			"2. **The frames upload** to your Framecut server (you'll connect it " +
+			"on the next screen).\n" +
+			"3. **Open the editor**, drag out a range of frames, and export your GIF.\n\n" +
+			"Nothing to install — yt-dlp and ffmpeg are built in. Only grab content " +
+			"you own or have the rights to use.")
+	guide.Wrapping = fyne.TextWrapWord
 
-	cont := widget.NewButton("Continue", func() {
+	cont := widget.NewButton("Get started →", func() {
 		ui.win.SetContent(ui.wizardConnect(cfg))
 	})
 	cont.Importance = widget.HighImportance
 
-	return container.NewPadded(container.NewVBox(
-		layout.NewSpacer(),
-		headline,
-		container.NewPadded(container.NewCenter(cont)),
-		layout.NewSpacer(),
+	return container.NewPadded(container.NewBorder(
+		nil,
+		container.NewPadded(cont),
+		nil, nil,
+		container.NewVScroll(guide),
 	))
 }
 
