@@ -39,6 +39,7 @@ type guiConfig struct {
 	JPEGQuality int     `json:"jpeg_quality"`
 	MaxHeight   int     `json:"max_height"`
 	Cookies     string  `json:"cookies"`
+	OutputDir   string  `json:"output_dir"`
 }
 
 func runGUI() {
@@ -193,6 +194,23 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 
 	localOnly := widget.NewCheck("Local only — skip upload, keep the files", nil)
 
+	// Where kept files land (used with Local only / --keep-files). Defaults to
+	// ~/Downloads/Framecut so a Finder/Explorer launch never writes to a bad CWD.
+	outputEntry := widget.NewEntry()
+	if cfg.OutputDir != "" {
+		outputEntry.SetText(cfg.OutputDir)
+	} else {
+		outputEntry.SetText(defaultOutputDir())
+	}
+	browseBtn := widget.NewButton("Browse…", func() {
+		dialog.ShowFolderOpen(func(u fyne.ListableURI, err error) {
+			if err == nil && u != nil {
+				outputEntry.SetText(u.Path())
+			}
+		}, ui.win)
+	})
+	outputRow := container.NewBorder(nil, nil, widget.NewLabel("Save to"), browseBtn, outputEntry)
+
 	mainForm := widget.NewForm(
 		widget.NewFormItem("Video URL", urlEntry),
 		widget.NewFormItem("Server URL", serverEntry),
@@ -234,6 +252,7 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 			dialog.ShowError(err, ui.win)
 			return
 		}
+		opts.outputDir = strings.TrimSpace(outputEntry.Text)
 
 		saveGUIConfig(guiConfig{
 			Server:      opts.server,
@@ -242,6 +261,7 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 			JPEGQuality: opts.jpegQuality,
 			MaxHeight:   opts.maxHeight,
 			Cookies:     cookies,
+			OutputDir:   opts.outputDir,
 		})
 
 		// This handler runs on the UI goroutine, so update widgets directly
@@ -283,6 +303,7 @@ func (ui *grabUI) mainScreen(cfg guiConfig) fyne.CanvasObject {
 		mainForm,
 		adv,
 		localOnly,
+		outputRow,
 		container.NewPadded(grabBtn),
 		openBtn,
 		widget.NewLabelWithStyle("Progress", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),

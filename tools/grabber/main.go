@@ -39,6 +39,7 @@ type options struct {
 	keepFiles   bool
 	localOnly   bool
 	title       string
+	outputDir   string
 }
 
 type caption struct {
@@ -193,6 +194,8 @@ func parseFlags() options {
 	flag.BoolVar(&o.keepFiles, "keep-files", false, "keep the downloaded files and extracted frames")
 	flag.BoolVar(&o.localOnly, "local-only", false, "skip the upload; keep the mp4 + subtitles for the /add web upload flow")
 	flag.StringVar(&o.title, "title", "", "override the video title")
+	flag.StringVar(&o.outputDir, "output-dir", os.Getenv("FRAMECUT_OUT"),
+		"folder for kept files with --keep-files/--local-only (default: ~/Downloads/Framecut)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: %s <video-url> [flags]\n\nflags:\n", filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
@@ -271,7 +274,11 @@ func writeExecutable(path string, data []byte) error {
 
 func makeWorkdir(opts options) (string, func(), error) {
 	if opts.keepFiles || opts.localOnly {
-		dir, err := filepath.Abs("framecut_grab")
+		base := opts.outputDir
+		if base == "" {
+			base = defaultOutputDir()
+		}
+		dir, err := filepath.Abs(base)
 		if err == nil {
 			err = os.MkdirAll(dir, 0o755)
 		}
@@ -280,6 +287,18 @@ func makeWorkdir(opts options) (string, func(), error) {
 
 	dir, err := os.MkdirTemp("", "framecut-grab-")
 	return dir, func() { os.RemoveAll(dir) }, err
+}
+
+// defaultOutputDir is where kept files (--keep-files / --local-only) land when
+// the user hasn't chosen a folder: ~/Downloads/Framecut, which exists and is
+// writable on every platform. Falls back to a CWD-relative dir if the home
+// directory can't be determined.
+func defaultOutputDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "framecut_grab"
+	}
+	return filepath.Join(home, "Downloads", "Framecut")
 }
 
 type metadata struct {

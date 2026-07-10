@@ -1,6 +1,48 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestMakeWorkdirUsesOutputDir(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "kept")
+
+	wd, cleanup, err := makeWorkdir(options{localOnly: true, outputDir: target})
+	defer cleanup()
+	if err != nil {
+		t.Fatalf("makeWorkdir: %v", err)
+	}
+	if wd != target {
+		t.Errorf("workdir = %q, want %q", wd, target)
+	}
+	if fi, err := os.Stat(wd); err != nil || !fi.IsDir() {
+		t.Errorf("output dir not created: %v", err)
+	}
+}
+
+func TestMakeWorkdirEphemeralIsCleaned(t *testing.T) {
+	wd, cleanup, err := makeWorkdir(options{}) // upload mode: temp + cleanup
+	if err != nil {
+		t.Fatalf("makeWorkdir: %v", err)
+	}
+	if _, err := os.Stat(wd); err != nil {
+		t.Fatalf("temp workdir missing: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(wd); !os.IsNotExist(err) {
+		t.Errorf("temp workdir not removed after cleanup")
+	}
+}
+
+func TestDefaultOutputDir(t *testing.T) {
+	got := defaultOutputDir()
+	if got != "framecut_grab" && !strings.HasSuffix(got, filepath.Join("Downloads", "Framecut")) {
+		t.Errorf("unexpected default output dir: %q", got)
+	}
+}
 
 func TestGuiBuildOptions(t *testing.T) {
 	t.Run("valid upload trims and defaults", func(t *testing.T) {
@@ -94,7 +136,7 @@ func TestGuiConfigRoundTrip(t *testing.T) {
 	t.Setenv("HOME", dir)            // macOS: ~/Library/Application Support
 	t.Setenv("XDG_CONFIG_HOME", dir) // linux: honored by os.UserConfigDir
 
-	want := guiConfig{Server: "https://s.example", APIKey: "sekret", FPS: 2, JPEGQuality: 90, MaxHeight: 720, Cookies: "firefox"}
+	want := guiConfig{Server: "https://s.example", APIKey: "sekret", FPS: 2, JPEGQuality: 90, MaxHeight: 720, Cookies: "firefox", OutputDir: "/tmp/framecut-out"}
 	saveGUIConfig(want)
 
 	got := loadGUIConfig()
