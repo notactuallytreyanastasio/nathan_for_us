@@ -222,7 +222,15 @@ def post_batch(server, api_key, payload):
     request = urllib.request.Request(
         f"{server}/api/videos/upload",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-API-Key": api_key},
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": api_key,
+            # A real browser-ish UA: the default Python-urllib/x.y signature
+            # trips Cloudflare's bot rule (HTTP 403, error 1010) in front of
+            # some Framecut servers, so the request never reaches the app.
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        },
         method="POST",
     )
     last_error = None
