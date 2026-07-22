@@ -58,6 +58,9 @@ defmodule NathanForUsWeb.VideoTimelineLive do
           socket
           |> assign(:video, video)
           |> assign(:page_title, "Edit · #{video.title}")
+          # Set by the landing's "cut out a GIF" flow (/video/:id?post=1): the
+          # first GIF generated here auto-posts to the global timeline.
+          |> assign(:auto_post, false)
           |> assign(:frame_count, frame_count)
           |> assign(:video_duration_ms, video_duration_ms || 0)
           |> assign(:frame_index, frame_index)
@@ -90,6 +93,8 @@ defmodule NathanForUsWeb.VideoTimelineLive do
   end
 
   def handle_params(params, _url, socket) do
+    socket = assign(socket, :auto_post, params["post"] == "1" or socket.assigns.auto_post)
+
     if connected?(socket) and socket.assigns[:frame_index] not in [nil, []] do
       {:noreply, apply_url_params(socket, params)}
     else
@@ -389,6 +394,7 @@ defmodule NathanForUsWeb.VideoTimelineLive do
             |> assign(:generated_gif_id, gif_id)
             |> assign(:generated_browseable_gif_id, browseable_gif_id)
             |> assign(:generated_gif_data, fallback)
+            |> maybe_auto_post(browseable_gif_id)
 
           {:error, reason} ->
             Logger.warning("GIF generation failed: #{inspect(reason)}")
@@ -951,6 +957,30 @@ defmodule NathanForUsWeb.VideoTimelineLive do
     case Repo.one(query) do
       nil -> create_browseable_gif_from_generation(frames_meta, video, user, gif)
       browseable_gif -> browseable_gif
+    end
+  end
+
+  # The landing "cut out a GIF" flow (?post=1): once a GIF finishes generating,
+  # post it to the global timeline automatically and jump to its permalink.
+  # Requires a logged-in user (posting is attributed); if the user isn't logged
+  # in or the post fails, we fall through to the normal manual post UI.
+  defp maybe_auto_post(socket, browseable_gif_id) do
+    user = socket.assigns[:current_user]
+
+    if socket.assigns[:auto_post] and not is_nil(user) and not is_nil(browseable_gif_id) do
+      title = socket |> default_post_title() |> normalize_title()
+
+      case Viral.post_browseable_gif_to_timeline(browseable_gif_id, user.id, title) do
+        {:ok, _browseable_gif} ->
+          socket
+          |> put_flash(:info, "GIF posted to the timeline.")
+          |> push_navigate(to: ~p"/g/#{browseable_gif_id}")
+
+        {:error, _reason} ->
+          socket
+      end
+    else
+      socket
     end
   end
 

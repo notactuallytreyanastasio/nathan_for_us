@@ -51,6 +51,10 @@ defmodule NathanForUsWeb.AddVideoLive do
       socket
       |> assign(:page_title, "Add a video")
       |> assign(:tab, "upload")
+      # Carried from the landing's "Add a video, cut out a GIF" button
+      # (/add?post=1): when set, the editor auto-posts the first GIF you cut
+      # to the global timeline.
+      |> assign(:auto_post, false)
       |> assign(:base_url, String.trim_trailing(url(~p"/"), "/"))
       |> assign(:ingest_video_id, nil)
       |> assign(:ingest_captions_text, nil)
@@ -68,6 +72,8 @@ defmodule NathanForUsWeb.AddVideoLive do
         tab when tab in ["upload", "cli"] -> assign(socket, :tab, tab)
         _ -> socket
       end
+
+    socket = assign(socket, :auto_post, params["post"] == "1" or socket.assigns.auto_post)
 
     case base_url_from_uri(uri) do
       nil ->
@@ -507,6 +513,11 @@ defmodule NathanForUsWeb.AddVideoLive do
 
   # --- Ingest helpers -------------------------------------------------------
 
+  # Carry the auto-post flag into the editor so the first GIF cut there posts
+  # straight to the timeline (the landing "cut out a GIF" flow).
+  defp editor_path(video_id, true), do: ~p"/video/#{video_id}?post=1"
+  defp editor_path(video_id, _), do: ~p"/video/#{video_id}"
+
   defp finalize_ingest(socket, video_id) do
     video = Video.get_video!(video_id)
 
@@ -523,7 +534,7 @@ defmodule NathanForUsWeb.AddVideoLive do
           |> reset_ingest_assigns()
           |> put_finalize_flash(captions_result)
           |> push_event("finish_ack", %{video_id: video_id})
-          |> push_navigate(to: ~p"/video/#{video_id}")
+          |> push_navigate(to: editor_path(video_id, socket.assigns.auto_post))
 
         {:noreply, socket}
 

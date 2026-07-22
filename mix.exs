@@ -60,7 +60,8 @@ defmodule NathanForUs.MixProject do
       {:bandit, "~> 1.5"},
       {:bcrypt_elixir, "~> 3.0"},
       {:gen_stage, "~> 1.2"},
-      {:req, "~> 0.5.10"}
+      {:req, "~> 0.5.10"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 

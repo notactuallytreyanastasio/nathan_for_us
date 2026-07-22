@@ -30,9 +30,9 @@ defmodule NathanForUsWeb.UserRegistrationController do
         # redirect/2 after it raises AlreadySentError (which is also why the
         # previous explicit redirect here never took effect).
         conn
-        |> put_flash(:info, "Welcome! Grab the desktop tool and rip your first video.")
+        |> put_flash(:info, "Welcome! Tap the button to add a video and cut your first GIF.")
         |> put_session(:show_welcome_modal, true)
-        |> put_session(:user_return_to, ~p"/setup")
+        |> put_session(:user_return_to, ~p"/")
         |> UserAuth.log_in_user(user)
 
       {:error, %Ecto.Changeset{} = changeset} ->

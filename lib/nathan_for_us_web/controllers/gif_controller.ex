@@ -12,8 +12,20 @@ defmodule NathanForUsWeb.GifController do
   """
   use NathanForUsWeb, :controller
 
-  alias NathanForUs.{Gif, Repo}
+  alias NathanForUs.{Gif, Repo, Viral}
+  alias NathanForUs.Viral.BrowseableGif
   alias NathanForUs.Video.{FrameImage, VideoFrame}
+
+  @doc """
+  `GET /random` — redirects to a random posted GIF's permalink (`/g/:id`),
+  or to the browse feed when no GIFs have been posted yet.
+  """
+  def random(conn, _params) do
+    case Viral.get_random_public_gif() do
+      %BrowseableGif{id: id} -> redirect(conn, to: ~p"/g/#{id}")
+      _ -> redirect(conn, to: ~p"/gifs")
+    end
+  end
 
   def show(conn, %{"id" => id} = params) do
     with {gif_id, ""} <- Integer.parse(id),

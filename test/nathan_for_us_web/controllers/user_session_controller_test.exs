@@ -32,9 +32,9 @@ defmodule NathanForUsWeb.UserSessionControllerTest do
       assert get_session(conn, :user_token)
       assert redirected_to(conn) == ~p"/"
 
-      # Now do a logged in request and assert on the menu
-      # Since authenticated users are redirected to /stay-tuned, test that page
-      conn = get(conn, ~p"/")
+      # Now do a logged in request and assert on the nav chrome. The landing (/)
+      # hides the nav, so check a page that renders it.
+      conn = get(conn, ~p"/library")
       response = html_response(conn, 200)
       assert response =~ user.email
       # Note: /users/settings link not available on stay-tuned page

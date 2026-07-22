@@ -153,6 +153,21 @@ defmodule NathanForUs.Viral do
   end
 
   @doc """
+  Picks one random timeline GIF (public AND posted), or nil if none exist.
+
+  Backs the `/random` shortcut. No feed preloads — callers only need the id to
+  redirect to the `/g/:id` permalink.
+  """
+  def get_random_public_gif do
+    from(g in BrowseableGif,
+      where: g.is_public == true and not is_nil(g.posted_at),
+      order_by: fragment("RANDOM()"),
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  @doc """
   Creates a browseable GIF entry when someone generates a GIF.
 
   Callers decide visibility via `is_public` (generation creates private

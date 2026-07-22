@@ -4,37 +4,45 @@ defmodule NathanForUsWeb.HomeLiveTest do
   import Phoenix.LiveViewTest
   import NathanForUs.AccountsFixtures
 
-  describe "logged out" do
-    test "/ renders the landing page, not the library", %{conn: conn} do
+  describe "landing page" do
+    test "/ renders the one-button landing, not the library", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/")
 
-      assert html =~ "Turn any video into GIFs, frame by frame."
-      assert html =~ "Grab"
-      assert html =~ "Upload"
-      assert html =~ "Get started"
-      refute html =~ "VIDEO LIBRARY"
+      assert html =~ "cut out a GIF"
+      assert html =~ "Browse GIFs"
+      assert html =~ "Random GIF"
+      refute html =~ "Video library"
+      refute html =~ "Search everything said"
     end
 
-    test "landing links to register, feed, and log in", %{conn: conn} do
+    test "logged out: the primary button goes to register", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/")
 
       assert has_element?(view, ~s{a[href="/users/register"]})
+      refute has_element?(view, ~s{a[href="/add?post=1"]})
       assert has_element?(view, ~s{a[href="/gifs"]})
-      assert has_element?(view, ~s{a[href="/users/log_in"]})
+      assert has_element?(view, ~s{a[href="/random"]})
     end
-  end
 
-  describe "logged in" do
-    setup %{conn: conn} do
+    test "suppresses the global nav chrome (full-screen, one button)", %{conn: conn} do
+      # Dead render so the root layout (which holds the nav) is included.
+      response = conn |> get(~p"/") |> html_response(200)
+
+      refute response =~ "<nav"
+      refute response =~ "Explore"
+    end
+
+    test "logged in: same landing, but the button drops into the flow", %{conn: conn} do
       user = user_fixture()
-      %{conn: log_in_user(conn, user), user: user}
-    end
+      conn = log_in_user(conn, user)
 
-    test "/ renders the library", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/")
+      {:ok, view, html} = live(conn, "/")
 
-      assert html =~ "FRAMECUT"
-      refute html =~ "Get started"
+      assert html =~ "cut out a GIF"
+      refute html =~ "Video library"
+      # The primary button carries ?post=1 so the editor auto-posts the cut GIF.
+      assert has_element?(view, ~s{a[href="/add?post=1"]})
+      refute has_element?(view, ~s{a[href="/users/register"]})
     end
   end
 end

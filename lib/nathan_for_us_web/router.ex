@@ -21,11 +21,13 @@ defmodule NathanForUsWeb.Router do
     pipe_through :browser
 
     live "/", HomeLive
+    live "/library", LibraryLive
     live "/video/:video_id", VideoTimelineLive
     live "/gifs", GifBrowseLive
     live "/timeline", TimelineLive
     live "/g/:id", GifShowLive, :show
 
+    get "/random", GifController, :random
     get "/gif/:id", GifController, :show
     get "/gif/:id/poster", GifController, :poster
     get "/frame/:id", FrameController, :show
