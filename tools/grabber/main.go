@@ -611,6 +611,11 @@ func postWithRetry(endpoint, apiKey string, payload any) (map[string]any, error)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-API-Key", apiKey)
+		// A browser-ish User-Agent: Go's default (Go-http-client/1.1) trips
+		// Cloudflare's bot rule (HTTP 403, error 1010) in front of some Framecut
+		// servers, so the request would never reach the app.
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "+
+			"AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15")
 
 		client := &http.Client{Timeout: 120 * time.Second}
 		resp, err := client.Do(req)
