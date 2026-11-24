@@ -32,6 +32,9 @@ defmodule NathanForUs.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
+      # What this app reports about its own inside to the factory (obs_factor).
+      # Vendored by obs_factor/packages/factory_report/install.sh.
+      {:factory_report, path: "vendor/factory_report"},
       {:phoenix, "~> 1.7.21"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.10"},
